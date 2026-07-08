@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kartikeya"
+version = "0.0.1"
+description = "Kartikeya — a standalone bubblewrap-sandboxed task queue and worker. Backend-agnostic (SQLite or Postgres); the execution engine formerly known as Kart."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Sean Campbell" }]
+requires-python = ">=3.11"
+keywords = ["task-queue", "sandbox", "bubblewrap", "bwrap", "worker", "kart", "willow"]
+dependencies = []
+
+[project.optional-dependencies]
+# LLM-backed "workflow" task type. Base worker runs shell tasks with zero LLM deps.
+llm = []
+# Reference Postgres backend helpers (SQLite backend needs no extra).
+postgres = ["psycopg2-binary>=2.9,<3.0"]
+
+[project.scripts]
+kartikeya = "kartikeya.worker:main"
+kart = "kartikeya.worker:main"
+
+[project.urls]
+Homepage = "https://github.com/rudi193-cmd/kartikeya"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kartikeya"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
