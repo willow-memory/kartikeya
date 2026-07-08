@@ -48,9 +48,12 @@ class TaskQueue(ABC):
     atomic — two concurrent workers must never claim the same row."""
 
     @abstractmethod
-    def claim_pending(self, agent: str, limit: int) -> list[TaskRow]:
+    def claim_pending(self, agent: str, limit: int, lane: str | None = None) -> list[TaskRow]:
         """Atomically transition up to `limit` pending `agent` rows to
-        'running' and return them. Must be safe under concurrent workers."""
+        'running' and return them. Must be safe under concurrent workers.
+
+        `lane` is an optional hint ('fast'/'batch'); backends that don't model
+        lanes ignore it."""
 
     @abstractmethod
     def mark_running(self, task_id: str) -> None:
@@ -102,7 +105,8 @@ class SqliteTaskQueue(TaskQueue):
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
-    def claim_pending(self, agent: str, limit: int) -> list[TaskRow]:
+    def claim_pending(self, agent: str, limit: int, lane: str | None = None) -> list[TaskRow]:
+        # base SQLite backend does not model lanes; `lane` is ignored.
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(

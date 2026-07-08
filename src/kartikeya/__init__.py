@@ -1,16 +1,19 @@
 """Kartikeya — standalone sandboxed task queue + worker (a.k.a. Kart).
 
-Public surface (filled in as the lift proceeds — see docs/DESIGN.md):
+Public surface:
 - Task-queue backend seam: `TaskQueue`, `TaskRow`, `QueueStats`, `SqliteTaskQueue`.
 - Execution lanes: `lanes` (fast/batch constants + worker-mode helpers).
 - Task security gate: `check_kart_task` (hybrid scan over task text).
-- (stage 1 cont.) sandbox, execute, worker — the bwrap runner + loop.
+- Execution: `execute_task_row`, `drain_claimed_tasks`, `run_shell_task`.
+- Worker loop: `run_worker`.
 """
 from __future__ import annotations
 
 from . import lanes
+from .execute import drain_claimed_tasks, execute_task_row, run_shell_task
 from .queue import QueueStats, SqliteTaskQueue, TaskQueue, TaskRow
 from .task_scan import check_kart_task
+from .worker import run_worker
 
 __version__ = "0.0.1"
 
@@ -21,5 +24,9 @@ __all__ = [
     "SqliteTaskQueue",
     "lanes",
     "check_kart_task",
+    "run_shell_task",
+    "execute_task_row",
+    "drain_claimed_tasks",
+    "run_worker",
     "__version__",
 ]
