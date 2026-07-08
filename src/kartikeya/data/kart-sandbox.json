@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "description": "Kartikeya bwrap mount policy (product-neutral default). Override via $KART_SANDBOX_CONFIG or $WILLOW_HOME/kart-sandbox.json to add host/fleet-specific paths without editing code.",
+  "env_prefixes": [
+    "WILLOW_",
+    "PG",
+    "POSTGRES",
+    "OLLAMA_",
+    "GIT_",
+    "TWINE_",
+    "PYPI_",
+    "ANTHROPIC_",
+    "OPENROUTER_",
+    "GROQ_",
+    "GITHUB_",
+    "NPM_",
+    "NODE_",
+    "SSH_AUTH",
+    "HUGGINGFACE_",
+    "HF_",
+    "OPENAI_",
+    "AWS_",
+    "DBUS_",
+    "XDG_"
+  ],
+  "credential_env_prefixes": [
+    "TWINE_",
+    "PYPI_",
+    "ANTHROPIC_",
+    "OPENROUTER_",
+    "GROQ_",
+    "GITHUB_",
+    "NPM_",
+    "HUGGINGFACE_",
+    "HF_",
+    "OPENAI_",
+    "AWS_"
+  ],
+  "bind_read_only": [
+    "/usr",
+    "/etc",
+    "/sys",
+    "{{HOME}}/github",
+    "{{HOME}}/.config/git",
+    "{{HOME}}/.config/systemd"
+  ],
+  "bind_read_write": [
+    "{{WILLOW_ROOT}}",
+    "{{HOME}}/.willow",
+    "{{HOME}}/.local",
+    "/var/run/postgresql"
+  ],
+  "bind_try": [
+    "{{WILLOW_ROOT}}/.venv-dev",
+    "{{HOME}}/.willow-venv",
+    "{{HOME}}/.gitconfig",
+    "{{HOME}}/.npmrc",
+    "{{HOME}}/.cargo",
+    "{{HOME}}/.npm",
+    "{{HOME}}/.cache/uv",
+    "{{HOME}}/.cache/pip",
+    "{{HOME}}/.cache/pre-commit",
+    "{{HOME}}/.config/pip",
+    "{{HOME}}/.config/pypoetry",
+    "{{HOME}}/.local/share/uv",
+    "/run/user",
+    "/run/media",
+    "{{XDG_RUNTIME_DIR}}",
+    "/run/systemd/resolve"
+  ],
+  "bind_try_read_only": [
+    "/lib32"
+  ],
+  "worktree_scan_roots": [
+    "{{WILLOW_ROOT}}/worktrees"
+  ],
+  "rtk_compress": {
+    "enabled": false
+  },
+  "_security_notes": {
+    "github_ro": "~/github is read-only by default; WILLOW_ROOT + its worktrees nest read-write on top. Hosts promote additional repos to RW via an override config.",
+    "ssh_dropped": "~/.ssh is not bound. SSH git uses SSH_AUTH_SOCK (via /run/user) + known_hosts (ro), both only on allow_net. Private keys never enter the sandbox.",
+    "creds_gated": "credential_env_prefixes (and ~/.config/gh, ~/.netrc) are present only on allow_net. A no-network task gets zero credentials.",
+    "localhost_tier": "# allow_localhost shares the host network namespace (loopback works) but still strips credentials. Weaker than --unshare-net; prefer over allow_net for local-only work.",
+    "tmp_tmpfs": "/tmp + /dev/shm are private tmpfs, not host binds."
+  }
+}
