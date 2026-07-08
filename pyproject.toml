@@ -11,6 +11,18 @@ license = { text = "MIT" }
 authors = [{ name = "Sean Campbell" }]
 requires-python = ">=3.11"
 keywords = ["task-queue", "sandbox", "bubblewrap", "bwrap", "worker", "kart", "willow"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Distributed Computing",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = []
 
 [project.optional-dependencies]
@@ -25,6 +37,8 @@ kart = "kartikeya.worker:main"
 
 [project.urls]
 Homepage = "https://github.com/rudi193-cmd/kartikeya"
+Repository = "https://github.com/rudi193-cmd/kartikeya"
+Issues = "https://github.com/rudi193-cmd/kartikeya/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kartikeya"]
