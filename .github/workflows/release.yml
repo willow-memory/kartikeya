@@ -2,14 +2,11 @@ name: Release
 
 # Publishes to PyPI when a version tag is pushed (e.g. `git tag v0.0.1 && git push --tags`).
 #
-# Uses PyPI Trusted Publishing (OIDC) — no API token is stored in the repo.
-# One-time setup before the first release:
-#   1. On PyPI: create the `kartikeya` project's trusted publisher — repo
-#      rudi193-cmd/kartikeya, workflow `release.yml`, environment `pypi`.
-#      (For the very first upload, use "pending publisher" on PyPI so the name
-#      is claimed by this workflow.)
-#   2. Create a GitHub environment named `pypi` (Settings -> Environments).
-# Until that is configured, this workflow is inert — nothing publishes without a tag.
+# Auth: a PyPI API token stored as the repo Actions secret `PYPI_API_TOKEN`
+# (Settings -> Secrets and variables -> Actions). One-time setup: create the
+# token on PyPI and add that secret. Until it exists, the publish step fails.
+# (Trusted Publishing / OIDC is the tokenless alternative but this project uses
+# the token pattern for parity with the operator's other releases.)
 
 on:
   push:
@@ -45,8 +42,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
-    permissions:
-      id-token: write   # required for Trusted Publishing (OIDC)
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -55,3 +50,6 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          attestations: false   # attestations require OIDC/Trusted Publishing
