@@ -70,3 +70,57 @@ def test_parse_task_network_strips_directives():
 
 def test_bwrap_available_returns_bool():
     assert isinstance(sandbox.bwrap_available(), bool)
+
+
+# ── resource caps: memory + PID limits (live-audit L-DOS-02 residual) ───────
+
+@pytest.mark.parametrize("text,expected", [
+    ("2G", 2 * 1024 ** 3), ("512M", 512 * 1024 ** 2), ("1024", 1024),
+    ("1.5G", int(1.5 * 1024 ** 3)), ("", None), ("garbage", None),
+])
+def test_parse_size(text, expected):
+    assert sandbox._parse_size(text) == expected
+
+
+def test_resource_limits_default_and_off_switch(monkeypatch):
+    monkeypatch.delenv("KART_MEM_MAX", raising=False)
+    monkeypatch.delenv("KART_PIDS_MAX", raising=False)
+    monkeypatch.delenv("WILLOW_KART_NO_RLIMIT", raising=False)
+    lim = sandbox._resource_limits()
+    assert lim["mem"] == 2 * 1024 ** 3 and lim["pids"] == 512
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    assert sandbox._resource_limits() is None
+
+
+def test_resource_limits_env_overrides(monkeypatch):
+    monkeypatch.setenv("KART_MEM_MAX", "256M")
+    monkeypatch.setenv("KART_PIDS_MAX", "64")
+    lim = sandbox._resource_limits()
+    assert lim["mem"] == 256 * 1024 ** 2 and lim["pids"] == 64
+
+
+def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatch):
+    # No KART_CGROUP_PARENT → the cgroup path is unavailable, so we get rlimits.
+    monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
+    preexec, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024 ** 2, "pids": 64})
+    assert mode == "rlimit"
+    assert callable(preexec) and cleanup is None
+
+
+@pytest.mark.skipif(sandbox._resource is None, reason="POSIX rlimits unavailable")
+def test_rlimit_actually_contains_a_memory_hog(monkeypatch):
+    # End-to-end: with a low address-space cap, a task that allocates past it must
+    # fail rather than eat host memory; a small task under the cap runs fine.
+    # Plain mode (no bwrap) isolates the rlimit mechanism from sandbox bring-up.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("KART_MEM_MAX", "512M")
+    monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
+
+    hog = sandbox.run_shell(
+        "python3 -c 'x = bytearray(900*1024*1024); print(len(x))'", timeout=30)
+    assert hog["returncode"] != 0, hog
+    assert hog.get("resource_limit") == "rlimit"
+
+    ok = sandbox.run_shell("echo under_the_cap", timeout=30)
+    assert ok["returncode"] == 0 and "under_the_cap" in ok["stdout"]
+    assert ok.get("resource_limit") == "rlimit"
