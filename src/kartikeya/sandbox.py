@@ -20,6 +20,11 @@ import tempfile
 import time
 from pathlib import Path
 
+try:
+    import resource as _resource  # POSIX only
+except ImportError:  # pragma: no cover - non-POSIX
+    _resource = None
+
 _log = logging.getLogger("kart.sandbox")
 
 _ALLOW_NET_DIRECTIVE = "# allow_net"
@@ -710,6 +715,123 @@ def _rtk_rewrite(cmd: str, config: dict) -> str:
     return _RTK_TOKEN_RE.sub(binary, rewritten)
 
 
+# ── resource caps: memory + PID limits on the sandboxed task ─────────────────
+# bwrap isolates namespaces and a wall-clock timeout bounds duration, but neither
+# caps memory or PID count. A memory hog (arbitrary code — the static scanner
+# cannot detect allocation) or any novel resource bomb can therefore degrade the
+# host until the timeout fires. This caps the task's address space and process
+# count, inherited across bwrap's fork/exec into the sandbox.
+#
+# Two mechanisms, best-first:
+#   1. cgroup v2 leaf under an operator-delegated parent (KART_CGROUP_PARENT) —
+#      counts real RSS and enforces a per-tree PID cap. cgroup v2's "no internal
+#      processes" rule means we cannot carve a child out of our own cgroup, so
+#      this needs an explicitly delegated, controller-enabled, empty parent.
+#   2. POSIX rlimits (RLIMIT_AS, RLIMIT_NPROC) — no root, no delegation, works in
+#      a rootless container. RLIMIT_AS caps *virtual* address space (blunter than
+#      cgroup RSS accounting), so the default is generous and env-tunable.
+# Off switch: WILLOW_KART_NO_RLIMIT=1.
+_MEM_MAX_DEFAULT = "2G"
+_PIDS_MAX_DEFAULT = 512
+
+
+def _parse_size(s: str) -> int | None:
+    s = (s or "").strip().upper()
+    if not s:
+        return None
+    mult = 1
+    if s and s[-1] in "KMGT":
+        mult = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}[s[-1]]
+        s = s[:-1]
+    try:
+        return int(float(s) * mult)
+    except ValueError:
+        return None
+
+
+def resource_caps_enabled() -> bool:
+    return os.environ.get("WILLOW_KART_NO_RLIMIT", "").strip().lower() not in ("1", "true", "yes")
+
+
+def _resource_limits() -> dict | None:
+    if not resource_caps_enabled():
+        return None
+    limits: dict = {}
+    mem = _parse_size(os.environ.get("KART_MEM_MAX", _MEM_MAX_DEFAULT))
+    if mem and mem > 0:
+        limits["mem"] = mem
+    try:
+        pids = int(os.environ.get("KART_PIDS_MAX", _PIDS_MAX_DEFAULT))
+    except ValueError:
+        pids = _PIDS_MAX_DEFAULT
+    if pids and pids > 0:
+        limits["pids"] = pids
+    return limits or None
+
+
+def _try_make_cgroup(limits: dict) -> str | None:
+    """Create a limited cgroup v2 leaf under KART_CGROUP_PARENT, or None. The
+    parent must be a delegated cgroup with memory+pids controllers enabled and no
+    internal processes; without one we fall back to rlimits."""
+    parent = os.environ.get("KART_CGROUP_PARENT", "").strip()
+    if not parent or not os.path.isdir(parent):
+        return None
+    try:
+        with open(os.path.join(parent, "cgroup.controllers")) as f:
+            controllers = set(f.read().split())
+        if not ({"memory", "pids"} <= controllers):
+            return None
+        leaf = os.path.join(parent, f"kart-{os.getpid()}-{int(time.time() * 1000) % 100000}")
+        os.mkdir(leaf)
+        if "mem" in limits:
+            with open(os.path.join(leaf, "memory.max"), "w") as f:
+                f.write(str(limits["mem"]))
+        if "pids" in limits:
+            with open(os.path.join(leaf, "pids.max"), "w") as f:
+                f.write(str(limits["pids"]))
+        return leaf
+    except OSError:
+        return None
+
+
+def _limits_context(limits: dict):
+    """Return (preexec_fn, cleanup_fn, mode). preexec runs in the child post-fork
+    and is best-effort — a limit that can't be applied must not fail the task."""
+    leaf = _try_make_cgroup(limits)
+    if leaf:
+        def _preexec_cgroup() -> None:
+            try:
+                with open(os.path.join(leaf, "cgroup.procs"), "w") as f:
+                    f.write(str(os.getpid()))
+            except OSError:
+                pass
+
+        def _cleanup_cgroup() -> None:
+            try:
+                os.rmdir(leaf)
+            except OSError:
+                pass
+
+        return _preexec_cgroup, _cleanup_cgroup, "cgroup"
+
+    if _resource is None:
+        return None, None, "none"
+
+    def _preexec_rlimit() -> None:
+        if "mem" in limits:
+            try:
+                _resource.setrlimit(_resource.RLIMIT_AS, (limits["mem"], limits["mem"]))
+            except (ValueError, OSError):
+                pass
+        if "pids" in limits:
+            try:
+                _resource.setrlimit(_resource.RLIMIT_NPROC, (limits["pids"], limits["pids"]))
+            except (ValueError, OSError):
+                pass
+
+    return _preexec_rlimit, None, "rlimit"
+
+
 def run_shell(
     cmd: str,
     *,
@@ -777,6 +899,12 @@ def run_shell(
             return None
         return "ok" if '"child-pid"' in txt else "failed"
 
+    limits = _resource_limits()
+    preexec_fn = cleanup = None
+    resource_mode = "none"
+    if limits:
+        preexec_fn, cleanup, resource_mode = _limits_context(limits)
+
     try:
         proc = subprocess.run(
             full,
@@ -787,6 +915,7 @@ def run_shell(
             env=run_env,
             cwd=cwd,
             pass_fds=pass_fds,
+            preexec_fn=preexec_fn,
         )
         elapsed = round(time.time() - started, 2)
         setup = _setup_state()
@@ -797,6 +926,8 @@ def run_shell(
             "elapsed_s": elapsed,
             "sandbox": sandbox,
         }
+        if resource_mode != "none":
+            out["resource_limit"] = resource_mode
         if rtk_rewritten:
             out["rtk_rewritten"] = True
         if setup is not None:
@@ -823,6 +954,8 @@ def run_shell(
             "sandbox": sandbox,
         }
     finally:
+        if cleanup is not None:
+            cleanup()
         if status_file is not None:
             try:
                 status_file.close()
