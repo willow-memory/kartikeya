@@ -103,8 +103,36 @@ _DESTRUCTIVE = _compile([
     (r"git\s+clean\s+-fd", SEV_HIGH, "git clean -fd (deletes untracked files)"),
     (r"(DROP|TRUNCATE)\s+(TABLE|DATABASE|SCHEMA)", SEV_HIGH, "SQL destructive statement"),
     (r"(mkfs|dd\s+if=.*of=/dev|fdisk)", SEV_CRITICAL, "Low-level disk operation"),
+    # Writing a stream straight at a raw block device wipes it just like dd/mkfs.
+    (r">\s*/dev/(sd|hd|nvme|vd|xvd|mmcblk)\w*", SEV_CRITICAL, "Writing to a raw block device"),
+    # `find / -delete` / `find / -exec rm` is a root-filesystem wipe that the
+    # rm -rf patterns above don't cover. Scoped to `/` root to spare the common
+    # `find . -name '*.pyc' -delete` cleanup.
+    (r"find\s+/\s+[^|;&\n]*-delete\b", SEV_HIGH, "find / -delete (root filesystem mass deletion)"),
+    (r"find\s+/\s+[^|;&\n]*-exec\s+rm\s+-[a-z]*[rf]", SEV_HIGH, "find / -exec rm (root filesystem deletion)"),
     (r"chmod\s+(-R\s+)?777\s+/", SEV_HIGH, "Setting world-writable permissions on system path"),
     (r"chown\s+-R\s+.*\s+/", SEV_HIGH, "Recursive ownership change on system path"),
+])
+
+# Resource-exhaustion / local-DoS class. The bwrap sandbox caps duration with a
+# timeout and isolates PIDs, but imposes no memory/CPU/PID cgroup limit, so a
+# detonating bomb can degrade the host until the timeout fires. Block the
+# pattern-detectable ones at the gate; a memory hog in arbitrary code is not
+# regex-detectable and is left to a future cgroup cap.
+_RESOURCE_EXHAUSTION = _compile([
+    # Fork bomb: a function whose body references its own name and pipes it into
+    # a backgrounded copy. The self-reference (backref to the name) keeps normal
+    # `deploy() { build | log & }` functions from matching.
+    (r"(?P<fn>[\w:]+)\s*\(\)\s*\{[^{}]*(?P=fn)[^{}]*\|[^{}]*&", SEV_HIGH,
+     "Fork bomb (self-referential pipe + background)"),
+    (r":\s*\|\s*:\s*&", SEV_HIGH, "Fork-bomb body (`:|:&`)"),
+    # Infinite CPU spins that do no work.
+    (r"while\s+(true|:)\s*;?\s*do\s*(:|true)?\s*;?\s*done", SEV_HIGH, "Infinite CPU spin loop"),
+    (r"for\s*\(\(\s*;\s*;\s*\)\)", SEV_HIGH, "Infinite for-loop (for ((;;)))"),
+    # Disk fill from an endless source.
+    (r"dd\s+if=/dev/(zero|urandom|random)\b", SEV_HIGH, "Disk-filling dd from an endless source"),
+    (r"cat\s+/dev/(zero|urandom|random)\s*>", SEV_HIGH, "Filling a file from an endless /dev source"),
+    (r"\byes\b[^|<>\n]*>\s*\S", SEV_MEDIUM, "Disk-filling `yes` redirect"),
 ])
 
 _RM_RF_RE = re.compile(
@@ -300,6 +328,7 @@ def scan_bash(command: str, allowed_patterns: Sequence[str] = ()) -> list[ScanIs
     issues.extend(_check(command, _SECRET_ACCESS, "secret_access"))
     issues.extend(_check(command, _DESTRUCTIVE, "destructive"))
     issues.extend(_check_destructive_rm(command))
+    issues.extend(_check(command, _RESOURCE_EXHAUSTION, "resource_exhaustion"))
     issues.extend(_check(command, _SUSPICIOUS_INSTALL, "suspicious_install"))
     issues.extend(_check(command, _OBFUSCATION, "obfuscation"))
     return issues

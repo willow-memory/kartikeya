@@ -55,7 +55,8 @@ _FLEET_ALLOWED: tuple[str, ...] = (
     r"^\$\{WILLOW_PYTHON:-python3\}\s+",
 )
 
-_ALWAYS_BLOCK_CATEGORIES = frozenset({"exfiltration", "obfuscation", "secret_access"})
+_ALWAYS_BLOCK_CATEGORIES = frozenset({"exfiltration", "obfuscation", "secret_access",
+                                      "resource_exhaustion"})
 
 # Host-configurable source paths that must not be read/written via task text.
 # Empty by default (standalone). A fleet host sets this to protect its hook
