@@ -24,7 +24,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
-from .execute import TaskTypeHandler, execute_task_row, kart_timeout, trim_task_result
+from .execute import (
+    NetworkAuthorizer,
+    TaskTypeHandler,
+    execute_task_row,
+    kart_timeout,
+    trim_task_result,
+)
 from .home import willow_home
 from .lanes import KART_LANE_BATCH, KART_LANE_FAST, fast_worker_slots, normalize_lane
 from .queue import SqliteTaskQueue, TaskQueue, TaskRow
@@ -46,13 +52,18 @@ def _process_row(
     *,
     context: str,
     handlers: dict[str, TaskTypeHandler] | None,
+    network_authorizer: NetworkAuthorizer | None,
     on_run_event: RunEventFn,
 ) -> tuple[str, dict]:
     """Execute one claimed row and record terminal state via the queue."""
     on_run_event("open", row)
     try:
         status, result = execute_task_row(
-            row, timeout=kart_timeout(context), context=context, handlers=handlers
+            row,
+            timeout=kart_timeout(context),
+            context=context,
+            handlers=handlers,
+            network_authorizer=network_authorizer,
         )
     except Exception as e:  # defense in depth — execute_task_row already guards
         status, result = "failed", {"error": str(e), "context": f"{context}_exception"}
@@ -90,6 +101,7 @@ def run_worker(
     agent: str = "kart",
     once: bool = False,
     handlers: dict[str, TaskTypeHandler] | None = None,
+    network_authorizer: NetworkAuthorizer | None = None,
     on_heartbeat: HeartbeatFn | None = None,
     on_run_event: RunEventFn | None = None,
 ) -> None:
@@ -112,7 +124,8 @@ def run_worker(
     def _run(row: TaskRow) -> None:
         try:
             _process_row(queue, row, context=context,
-                         handlers=handlers, on_run_event=on_run_event)
+                         handlers=handlers, network_authorizer=network_authorizer,
+                         on_run_event=on_run_event)
         finally:
             with lock:
                 in_flight.discard(row.task_id)

@@ -4,6 +4,7 @@ These pin the two things the worker loop relies on: a claim moves a row out of
 'pending' exactly once (no double-claim under concurrency), and terminal state
 is recorded correctly.
 """
+import sqlite3
 import sys
 import threading
 from pathlib import Path
@@ -24,6 +25,41 @@ def test_submit_then_claim_returns_task(tmp_path):
     assert [t.task_id for t in claimed] == ["T1"]
     assert isinstance(claimed[0], TaskRow)
     assert q.get("T1")["status"] == "running"
+
+
+def test_signed_network_authorization_round_trips(tmp_path):
+    q = _queue(tmp_path)
+    envelope = '{"payload":"signed","signature":"abc"}'
+    q.submit(
+        "NET1",
+        "curl https://example.com\n# allow_net",
+        submitted_by="willow-mcp",
+        network_authorization=envelope,
+    )
+    row = q.claim_pending("kart", 1)[0]
+    assert row.submitted_by == "willow-mcp"
+    assert row.network_authorization == envelope
+    assert q.get("NET1")["network_authorization"] == envelope
+
+
+def test_existing_sqlite_schema_migrates_without_guessing_authority(tmp_path):
+    db = tmp_path / "legacy.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE tasks ("
+            "task_id TEXT PRIMARY KEY, task TEXT NOT NULL, "
+            "agent TEXT NOT NULL DEFAULT 'kart', submitted_by TEXT NOT NULL DEFAULT '', "
+            "status TEXT NOT NULL DEFAULT 'pending', result TEXT, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (task_id, task, submitted_by) VALUES (?, ?, ?)",
+            ("OLD", "curl https://example.com\n# allow_net", ""),
+        )
+    q = SqliteTaskQueue(db)
+    row = q.claim_pending("kart", 1)[0]
+    assert row.submitted_by == ""
+    assert row.network_authorization == ""
 
 
 def test_claim_respects_agent_and_limit(tmp_path):

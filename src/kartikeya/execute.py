@@ -28,6 +28,9 @@ _FENCE_RE = re.compile(r"```(bash|sh|python3?|python)?\n?(.*?)```", re.DOTALL)
 # Optional task-type handlers a host may register. Signature:
 #   handler(row: TaskRow, *, timeout: int | None, context: str) -> tuple[str, dict]
 TaskTypeHandler = Callable[..., "tuple[str, dict]"]
+# A host authorizer receives the complete claimed row and the opaque signed
+# envelope carried by the queue. Only the literal bool True authorizes egress.
+NetworkAuthorizer = Callable[[TaskRow, str], bool]
 
 
 def kart_timeout(context: str = "poll") -> int:
@@ -195,12 +198,39 @@ def _task_type(cmd: str, row: TaskRow) -> str:
     return "shell"
 
 
+def _network_denial(
+    row: TaskRow,
+    authorizer: NetworkAuthorizer | None,
+) -> dict | None:
+    """Return a denial result for a network request, or None when authorized.
+
+    Kartikeya deliberately does not know how a host signs or verifies an
+    authorization. It only enforces that network requests have attributable,
+    task-bound authority and that a host callback positively verifies it.
+    """
+    if authorizer is None:
+        return {"error": "network_authorization_denied: verifier unavailable"}
+    if not row.submitted_by.strip():
+        return {"error": "network_authorization_denied: submitted_by missing"}
+    envelope = row.network_authorization
+    if not envelope:
+        return {"error": "network_authorization_denied: signed envelope missing"}
+    try:
+        allowed = authorizer(row, envelope)
+    except Exception:
+        return {"error": "network_authorization_denied: verifier error"}
+    if allowed is not True:
+        return {"error": "network_authorization_denied: verifier refused"}
+    return None
+
+
 def execute_task_row(
     row: TaskRow,
     *,
     timeout: int | None = None,
     context: str = "poll",
     handlers: dict[str, TaskTypeHandler] | None = None,
+    network_authorizer: NetworkAuthorizer | None = None,
 ) -> tuple[str, dict]:
     """Route one claimed task row. Returns (status, result).
 
@@ -213,10 +243,20 @@ def execute_task_row(
     ttype = _task_type(cmd, row)
 
     if ttype == "shell":
-        try:
-            status, result = run_shell_task(cmd, timeout=timeout, context=context)
-        except Exception as e:
-            status, result = "failed", {"error": str(e)}
+        from .sandbox import task_allows_network
+
+        denied = (
+            _network_denial(row, network_authorizer)
+            if task_allows_network(cmd)
+            else None
+        )
+        if denied:
+            status, result = "failed", denied
+        else:
+            try:
+                status, result = run_shell_task(cmd, timeout=timeout, context=context)
+            except Exception as e:
+                status, result = "failed", {"error": str(e)}
     else:
         handler = (handlers or {}).get(ttype)
         if handler is None:
@@ -255,6 +295,7 @@ def drain_claimed_tasks(
     *,
     context: str = "poll",
     handlers: dict[str, TaskTypeHandler] | None = None,
+    network_authorizer: NetworkAuthorizer | None = None,
     log_prefix: str = "kart",
 ) -> list[tuple[str, str, dict]]:
     """Execute claimed rows and record terminal state via the TaskQueue.
@@ -264,7 +305,10 @@ def drain_claimed_tasks(
     outcomes: list[tuple[str, str, dict]] = []
     for row in rows:
         status, result = execute_task_row(
-            row, context=context, handlers=handlers
+            row,
+            context=context,
+            handlers=handlers,
+            network_authorizer=network_authorizer,
         )
         stored = trim_task_result(result, status)
         try:
