@@ -243,11 +243,11 @@ def execute_task_row(
     ttype = _task_type(cmd, row)
 
     if ttype == "shell":
-        from .sandbox import task_allows_network
+        from .sandbox import task_requests_shared_network
 
         denied = (
             _network_denial(row, network_authorizer)
-            if task_allows_network(cmd)
+            if task_requests_shared_network(cmd)
             else None
         )
         if denied:

@@ -468,6 +468,17 @@ def task_allows_localhost(task_text: str) -> bool:
     return any(line.strip() == _ALLOW_LOCALHOST_DIRECTIVE for line in task_text.splitlines())
 
 
+def task_requests_shared_network(task_text: str) -> bool:
+    """Whether a task asks to share the host network namespace.
+
+    Both directives cross the network isolation boundary. ``allow_localhost``
+    does not receive credential environment variables, but it can still reach
+    every service listening on the host namespace and therefore requires the
+    same attributable per-task authorization as ``allow_net``.
+    """
+    return task_allows_network(task_text) or task_allows_localhost(task_text)
+
+
 def parse_task_network(task_text: str) -> tuple[str, bool, bool]:
     """Strip network directives; return (cmd_body, allow_net, allow_localhost)."""
     allow_net = task_allows_network(task_text)

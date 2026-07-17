@@ -114,13 +114,28 @@ def _network_row(**overrides):
     return TaskRow(**values)
 
 
+def _localhost_row(**overrides):
+    values = {
+        "task_id": "LOCAL",
+        "task": "curl http://127.0.0.1:11434\n# allow_localhost",
+        "submitted_by": "requester",
+        "network_authorization": '{"signed":true}',
+    }
+    values.update(overrides)
+    return TaskRow(**values)
+
+
 @pytest.mark.parametrize(
     ("row", "authorizer", "error"),
     [
         (_network_row(), None, "verifier unavailable"),
+        (_localhost_row(), None, "verifier unavailable"),
         (_network_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
+        (_localhost_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
         (_network_row(network_authorization=""), lambda *_: True, "signed envelope missing"),
+        (_localhost_row(network_authorization=""), lambda *_: True, "signed envelope missing"),
         (_network_row(), lambda *_: False, "verifier refused"),
+        (_localhost_row(), lambda *_: False, "verifier refused"),
     ],
 )
 def test_network_request_denied_before_shell_launch(
@@ -165,6 +180,26 @@ def test_network_authorizer_receives_full_row_and_envelope(monkeypatch):
         lambda *_a, **_k: ("completed", {"stdout": "allowed"}),
     )
     row = _network_row()
+
+    def authorize(received_row, envelope):
+        seen["row"] = received_row
+        seen["envelope"] = envelope
+        return True
+
+    status, result = kexec.execute_task_row(row, network_authorizer=authorize)
+    assert status == "completed"
+    assert result["stdout"] == "allowed"
+    assert seen == {"row": row, "envelope": row.network_authorization}
+
+
+def test_localhost_authorizer_receives_full_row_and_envelope(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: ("completed", {"stdout": "allowed"}),
+    )
+    row = _localhost_row()
 
     def authorize(received_row, envelope):
         seen["row"] = received_row
