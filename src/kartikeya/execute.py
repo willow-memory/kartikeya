@@ -201,6 +201,7 @@ def execute_task_row(
     timeout: int | None = None,
     context: str = "poll",
     handlers: dict[str, TaskTypeHandler] | None = None,
+    network_authorizer: "Callable[[TaskRow, str], bool] | None" = None,
 ) -> tuple[str, dict]:
     """Route one claimed task row. Returns (status, result).
 
@@ -208,11 +209,28 @@ def execute_task_row(
     a matching entry in `handlers` (host/extra supplied); with none registered
     they fail cleanly rather than importing fleet/LLM code. On failure (or with
     WILLOW_KART_LOG_ALL=1) a forensic artifact is written and `log_dir` set.
+
+    `network_authorizer` is an optional host-supplied pre-launch gate. When a
+    shell task requests network (`# allow_net` / `# allow_localhost`), it is
+    called as `network_authorizer(row, row.network_authorization)` BEFORE the
+    sandbox launches; a falsy return denies the task (no shell runs). Kartikeya
+    owns the seam and the timing; the host owns the policy. Tasks that request no
+    network never consult it.
     """
     cmd = row.task or ""
     ttype = _task_type(cmd, row)
 
     if ttype == "shell":
+        if network_authorizer is not None:
+            _body, allow_net, allow_localhost = _parse_task_network_directives(cmd)
+            if (allow_net or allow_localhost) and not network_authorizer(
+                row, getattr(row, "network_authorization", "") or ""
+            ):
+                reason = getattr(network_authorizer, "last_error", "") or "denied"
+                return "failed", {
+                    "error": f"verifier refused: {reason}",
+                    "context": "egress_denied",
+                }
         try:
             status, result = run_shell_task(cmd, timeout=timeout, context=context)
         except Exception as e:

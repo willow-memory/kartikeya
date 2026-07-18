@@ -47,12 +47,14 @@ def _process_row(
     context: str,
     handlers: dict[str, TaskTypeHandler] | None,
     on_run_event: RunEventFn,
+    network_authorizer: "Callable[[TaskRow, str], bool] | None" = None,
 ) -> tuple[str, dict]:
     """Execute one claimed row and record terminal state via the queue."""
     on_run_event("open", row)
     try:
         status, result = execute_task_row(
-            row, timeout=kart_timeout(context), context=context, handlers=handlers
+            row, timeout=kart_timeout(context), context=context, handlers=handlers,
+            network_authorizer=network_authorizer,
         )
     except Exception as e:  # defense in depth — execute_task_row already guards
         status, result = "failed", {"error": str(e), "context": f"{context}_exception"}
@@ -92,12 +94,17 @@ def run_worker(
     handlers: dict[str, TaskTypeHandler] | None = None,
     on_heartbeat: HeartbeatFn | None = None,
     on_run_event: RunEventFn | None = None,
+    network_authorizer: "Callable[[TaskRow, str], bool] | None" = None,
 ) -> None:
     """Drain `queue` until stopped (or, with once=True, until it is empty).
 
     lane: 'fast' runs up to `slots` tasks concurrently; 'batch' runs one at a
     time. `once=True` claims and processes everything currently pending, waits
     for in-flight work, and returns — for tests and cron-style one-shot drains.
+
+    `network_authorizer` is an optional host-supplied gate consulted just before
+    a network-requesting task's sandbox launches (see execute_task_row). Left
+    None, no gate runs and behavior is unchanged.
     """
     lane = normalize_lane(lane)
     on_heartbeat = on_heartbeat or _noop
@@ -112,7 +119,8 @@ def run_worker(
     def _run(row: TaskRow) -> None:
         try:
             _process_row(queue, row, context=context,
-                         handlers=handlers, on_run_event=on_run_event)
+                         handlers=handlers, on_run_event=on_run_event,
+                         network_authorizer=network_authorizer)
         finally:
             with lock:
                 in_flight.discard(row.task_id)

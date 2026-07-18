@@ -15,7 +15,7 @@ from .queue import QueueStats, SqliteTaskQueue, TaskQueue, TaskRow
 from .task_scan import check_kart_task
 from .worker import run_worker
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 __all__ = [
     "TaskQueue",
