@@ -250,6 +250,13 @@ def collect_mcp_trust_ro_overlays(root: Path | None = None) -> list[Path]:
     confirmed OAuth records — the gate for host stdio/serve. The fleet home is
     bind-mounted read-write for store/kart logs; this overlay blocks sandbox tasks
     from rewriting the ACLs that gate them (FRANK baf2f63a / #777).
+
+    B-33 (willow-mcp docs/BUGS.md): the CONSENT files beside mcp_apps are the
+    documented fleet-wide egress off switch, and the rw home bind left them
+    writable from inside the sandbox — the one control described as the kill
+    switch was the one the untrusted runtime could write. Overlay them
+    read-only exactly as B-14 did for mcp_apps/: settings.global.json (canonical,
+    also under config/), consent.json (legacy mirror).
     """
     from .home import willow_home, willow_home_alias
 
@@ -257,18 +264,24 @@ def collect_mcp_trust_ro_overlays(root: Path | None = None) -> list[Path]:
     seen: set[str] = set()
     overlays: list[Path] = []
     for base in (willow_home(repo), willow_home_alias()):
-        trust = base / "mcp_apps"
-        try:
-            if not trust.is_dir():
+        candidates = (
+            base / "mcp_apps",
+            base / "settings.global.json",
+            base / "config" / "settings.global.json",
+            base / "consent.json",
+        )
+        for trust in candidates:
+            try:
+                if not trust.exists():
+                    continue
+                resolved = trust.resolve()
+            except OSError:
                 continue
-            resolved = trust.resolve()
-        except OSError:
-            continue
-        key = str(resolved)
-        if key in seen:
-            continue
-        seen.add(key)
-        overlays.append(resolved)
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            overlays.append(resolved)
     return overlays
 
 
