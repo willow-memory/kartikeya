@@ -69,6 +69,26 @@ def test_trust_overlay_skips_operator_alias_when_willow_home_set(tmp_path, monke
     assert overlays == [sandbox_home / "mcp_apps"]
 
 
+def test_trust_overlay_includes_consent_policy_files(tmp_path, monkeypatch):
+    home = tmp_path / "willow-home"
+    (home / "mcp_apps").mkdir(parents=True)
+    (home / "config").mkdir(parents=True)
+    (home / "config" / "settings.global.json").write_text('{"consent": {"internet": false}}')
+    (home / "config" / "consent.json").write_text('{"internet": false}')
+    (home / "consent.json").write_text('{"internet": false}')
+
+    monkeypatch.setenv("WILLOW_HOME", str(home))
+    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: home)
+
+    overlays = {p.resolve() for p in sandbox.collect_mcp_trust_ro_overlays()}
+    assert {
+        (home / "mcp_apps").resolve(),
+        (home / "config" / "settings.global.json").resolve(),
+        (home / "config" / "consent.json").resolve(),
+        (home / "consent.json").resolve(),
+    } <= overlays
+
+
 # ── config resolution (spec §5) ────────────────────────────────────────────
 
 def test_vendored_default_config_loads():

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kartikeya"
-version = "0.0.4"
+version = "0.0.5"
 description = "Kartikeya — a standalone bubblewrap-sandboxed task queue and worker. Backend-agnostic (SQLite or Postgres); the execution engine formerly known as Kart."
 readme = "README.md"
 license = { text = "MIT" }
