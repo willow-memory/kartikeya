@@ -61,20 +61,78 @@ def _bwrap_supports_json_status() -> bool:
         return False
 
 
-def willow_repo_root() -> Path | None:
-    env = (os.environ.get("WILLOW_ROOT") or "").strip()
-    candidates: list[Path] = []
-    if env:
-        candidates.append(Path(env).expanduser())
-    candidates.append(Path(__file__).resolve().parent.parent)
-    candidates.append(Path.home() / "github" / "willow-2.0")
-    for base in candidates:
+def _is_fleet_repo(base: Path) -> bool:
+    return (base / "core" / "kart_sandbox.py").is_file() or (base / "core" / "pg_bridge.py").is_file()
+
+
+def _is_willow_mcp_repo(base: Path) -> bool:
+    """True when ``base`` looks like a willow-mcp checkout (not willow-2.0 fleet)."""
+    if (base / "src" / "willow_mcp").is_dir():
+        return True
+    pkg = base / "willow_mcp"
+    if pkg.is_dir() and (pkg / "__init__.py").is_file():
+        return True
+    pyproject = base / "pyproject.toml"
+    if pyproject.is_file():
         try:
-            resolved = base.resolve()
-            if (resolved / "core" / "kart_sandbox.py").is_file() or (resolved / "core" / "pg_bridge.py").is_file():
-                return resolved
+            text = pyproject.read_text(encoding="utf-8")
         except OSError:
-            continue
+            return False
+        return 'name = "willow-mcp"' in text or "name='willow-mcp'" in text
+    return False
+
+
+def _resolve_repo_candidate(base: Path) -> Path | None:
+    try:
+        resolved = base.expanduser().resolve()
+    except OSError:
+        return None
+    if _is_fleet_repo(resolved) or _is_willow_mcp_repo(resolved):
+        return resolved
+    return None
+
+
+def _installed_willow_mcp_root() -> Path | None:
+    try:
+        import willow_mcp  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    pkg = Path(willow_mcp.__file__).resolve().parent
+    for candidate in [pkg, *pkg.parents]:
+        if _is_willow_mcp_repo(candidate):
+            return candidate
+    return None
+
+
+def willow_repo_root() -> Path | None:
+    """Resolve the host work root for Kart mount policy and venv discovery.
+
+    Preference order when ``$WILLOW_ROOT`` is unset:
+      1. ``$WILLOW_MCP_REPO`` (explicit willow-mcp checkout)
+      2. Installed ``willow_mcp`` package tree (``pip install willow-mcp`` / editable)
+      3. ``~/github/willow-mcp`` when present
+      4. Legacy fleet checkout ``~/github/willow-2.0``
+
+    When ``$WILLOW_ROOT`` *is* set, only that path is considered — no fleet fallback.
+    """
+    env = (os.environ.get("WILLOW_ROOT") or "").strip()
+    if env:
+        return _resolve_repo_candidate(Path(env))
+
+    candidates: list[Path] = []
+    mcp_env = (os.environ.get("WILLOW_MCP_REPO") or "").strip()
+    if mcp_env:
+        candidates.append(Path(mcp_env))
+    installed = _installed_willow_mcp_root()
+    if installed is not None:
+        candidates.append(installed)
+    candidates.append(Path.home() / "github" / "willow-mcp")
+    candidates.append(Path.home() / "github" / "willow-2.0")
+
+    for base in candidates:
+        resolved = _resolve_repo_candidate(base)
+        if resolved is not None:
+            return resolved
     return None
 
 
@@ -256,7 +314,13 @@ def collect_mcp_trust_ro_overlays(root: Path | None = None) -> list[Path]:
     repo = root or willow_repo_root()
     seen: set[str] = set()
     overlays: list[Path] = []
-    for base in (willow_home(repo), willow_home_alias()):
+    bases = [willow_home(repo)]
+    # When WILLOW_HOME is explicit (sandbox / alternate install), do not overlay the
+    # operator's ~/.willow trust root — that would ro-bind fleet mcp_apps into an
+    # isolated new-user home.
+    if not os.environ.get("WILLOW_HOME"):
+        bases.append(willow_home_alias())
+    for base in bases:
         trust = base / "mcp_apps"
         try:
             if not trust.is_dir():

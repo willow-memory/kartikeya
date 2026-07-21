@@ -14,6 +14,61 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from kartikeya import sandbox  # noqa: E402
 
 
+# ── repo root resolution (willow-mcp vs fleet) ───────────────────────────────
+
+def test_willow_mcp_repo_detected_by_src_layout(tmp_path):
+    mcp = tmp_path / "willow-mcp"
+    (mcp / "src" / "willow_mcp").mkdir(parents=True)
+    assert sandbox._is_willow_mcp_repo(mcp) is True
+    assert sandbox._is_fleet_repo(mcp) is False
+
+
+def test_fleet_repo_detected(tmp_path):
+    fleet = tmp_path / "willow-2.0"
+    (fleet / "core").mkdir(parents=True)
+    (fleet / "core" / "kart_sandbox.py").write_text("# stub")
+    assert sandbox._is_fleet_repo(fleet) is True
+
+
+def test_willow_repo_root_prefers_willow_mcp_over_fleet(tmp_path, monkeypatch):
+    fleet = tmp_path / "willow-2.0"
+    mcp = tmp_path / "willow-mcp"
+    (fleet / "core").mkdir(parents=True)
+    (fleet / "core" / "kart_sandbox.py").write_text("# stub")
+    (mcp / "src" / "willow_mcp").mkdir(parents=True)
+
+    monkeypatch.delenv("WILLOW_ROOT", raising=False)
+    monkeypatch.setenv("WILLOW_MCP_REPO", str(mcp))
+    monkeypatch.setattr(sandbox, "_installed_willow_mcp_root", lambda: None)
+
+    assert sandbox.willow_repo_root() == mcp.resolve()
+
+
+def test_willow_repo_root_honors_explicit_willow_root(tmp_path, monkeypatch):
+    mcp = tmp_path / "willow-mcp"
+    fleet = tmp_path / "willow-2.0"
+    (mcp / "src" / "willow_mcp").mkdir(parents=True)
+    (fleet / "core").mkdir(parents=True)
+    (fleet / "core" / "kart_sandbox.py").write_text("# stub")
+
+    monkeypatch.setenv("WILLOW_ROOT", str(mcp))
+    assert sandbox.willow_repo_root() == mcp.resolve()
+
+
+def test_trust_overlay_skips_operator_alias_when_willow_home_set(tmp_path, monkeypatch):
+    sandbox_home = tmp_path / "sandbox-home"
+    (sandbox_home / "mcp_apps").mkdir(parents=True)
+    operator = tmp_path / "operator-willow"
+    (operator / "mcp_apps").mkdir(parents=True)
+
+    monkeypatch.setenv("WILLOW_HOME", str(sandbox_home))
+    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: sandbox_home)
+    monkeypatch.setattr("kartikeya.home.willow_home_alias", lambda: operator)
+
+    overlays = sandbox.collect_mcp_trust_ro_overlays()
+    assert overlays == [sandbox_home / "mcp_apps"]
+
+
 # ── config resolution (spec §5) ────────────────────────────────────────────
 
 def test_vendored_default_config_loads():
