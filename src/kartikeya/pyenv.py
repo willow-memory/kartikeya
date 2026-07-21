@@ -31,7 +31,15 @@ def _looks_like_fleet(root: Path) -> bool:
 
 
 def venv_candidates(root: Path | None = None) -> list[Path]:
-    """Return candidate venv directories in preference order."""
+    """Return candidate venv directories in preference order.
+
+    Fleet-specific venv locations this generic package cannot know (e.g.
+    willow-2.0's ``~/github/willow-2.0/.venv-dev``) can be injected via the
+    ``KART_EXTRA_VENVS`` env var (``os.pathsep``-separated paths). They are
+    inserted at high preference so a caller sharing an environment with the fleet
+    resolves and binds the same venv the fleet's own resolver would — keeping the
+    sandbox mount set identical. Unset → no change (standalone default).
+    """
     candidates: list[Path] = []
     if root is not None:
         if _looks_like_willow_mcp(root) and not _looks_like_fleet(root):
@@ -40,6 +48,10 @@ def venv_candidates(root: Path | None = None) -> list[Path]:
         else:
             candidates.append(root / ".venv-dev")
             candidates.append(root / ".venv")
+    for raw in os.environ.get("KART_EXTRA_VENVS", "").split(os.pathsep):
+        raw = raw.strip()
+        if raw:
+            candidates.append(Path(raw).expanduser())
     try:
         candidates.append(willow_home(root) / "venv")
     except Exception:

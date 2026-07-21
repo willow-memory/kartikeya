@@ -110,6 +110,10 @@ def run_worker(
     lane: 'fast' runs up to `slots` tasks concurrently; 'batch' runs one at a
     time. `once=True` claims and processes everything currently pending, waits
     for in-flight work, and returns — for tests and cron-style one-shot drains.
+
+    `network_authorizer` is an optional host-supplied gate consulted just before
+    a network-requesting task's sandbox launches (see execute_task_row). Left
+    None, no gate runs and behavior is unchanged.
     """
     lane = normalize_lane(lane)
     on_heartbeat = on_heartbeat or _noop
@@ -123,9 +127,14 @@ def run_worker(
 
     def _run(row: TaskRow) -> None:
         try:
-            _process_row(queue, row, context=context,
-                         handlers=handlers, network_authorizer=network_authorizer,
-                         on_run_event=on_run_event)
+            _process_row(
+                queue,
+                row,
+                context=context,
+                handlers=handlers,
+                network_authorizer=network_authorizer,
+                on_run_event=on_run_event,
+            )
         finally:
             with lock:
                 in_flight.discard(row.task_id)

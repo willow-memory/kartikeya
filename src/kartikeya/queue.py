@@ -27,6 +27,11 @@ class TaskRow:
     task: str
     agent: str = "kart"
     submitted_by: str = ""
+    # Opaque per-task authorization token carried through to the executor's
+    # pre-launch network gate (see run_worker(network_authorizer=...)). Kartikeya
+    # never interprets it — a host that gates egress fills and reads it; a host
+    # that doesn't leaves it "".
+    network_authorization: str = ""
     status: str = "running"
     network_authorization: str = ""
 

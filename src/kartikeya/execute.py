@@ -198,16 +198,20 @@ def _task_type(cmd: str, row: TaskRow) -> str:
     return "shell"
 
 
+def _fleet_network_request(row: TaskRow, cmd: str) -> bool:
+    """True when a task crosses the network boundary with fleet attribution."""
+    from .sandbox import task_requests_shared_network
+
+    if not task_requests_shared_network(cmd):
+        return False
+    return bool(row.submitted_by.strip() or row.network_authorization.strip())
+
+
 def _network_denial(
     row: TaskRow,
     authorizer: NetworkAuthorizer | None,
 ) -> dict | None:
-    """Return a denial result for a network request, or None when authorized.
-
-    Kartikeya deliberately does not know how a host signs or verifies an
-    authorization. It only enforces that network requests have attributable,
-    task-bound authority and that a host callback positively verifies it.
-    """
+    """Return a denial result for a fleet-attributed network request, or None."""
     if authorizer is None:
         return {"error": "network_authorization_denied: verifier unavailable"}
     if not row.submitted_by.strip():
@@ -220,7 +224,8 @@ def _network_denial(
     except Exception:
         return {"error": "network_authorization_denied: verifier error"}
     if allowed is not True:
-        return {"error": "network_authorization_denied: verifier refused"}
+        reason = getattr(authorizer, "last_error", "") or "denied"
+        return {"error": f"verifier refused: {reason}", "context": "egress_denied"}
     return None
 
 
@@ -238,25 +243,36 @@ def execute_task_row(
     a matching entry in `handlers` (host/extra supplied); with none registered
     they fail cleanly rather than importing fleet/LLM code. On failure (or with
     WILLOW_KART_LOG_ALL=1) a forensic artifact is written and `log_dir` set.
+
+    `network_authorizer` is an optional host-supplied pre-launch gate. When a
+    shell task requests network (`# allow_net` / `# allow_localhost`), it is
+    called as `network_authorizer(row, row.network_authorization)` BEFORE the
+    sandbox launches; a falsy return denies the task (no shell runs). Kartikeya
+    owns the seam and the timing; the host owns the policy. Tasks that request no
+    network never consult it.
     """
     cmd = row.task or ""
     ttype = _task_type(cmd, row)
 
     if ttype == "shell":
-        from .sandbox import task_requests_shared_network
-
-        denied = (
-            _network_denial(row, network_authorizer)
-            if task_requests_shared_network(cmd)
-            else None
-        )
-        if denied:
-            status, result = "failed", denied
-        else:
-            try:
-                status, result = run_shell_task(cmd, timeout=timeout, context=context)
-            except Exception as e:
-                status, result = "failed", {"error": str(e)}
+        if _fleet_network_request(row, cmd):
+            denial = _network_denial(row, network_authorizer)
+            if denial:
+                return "failed", denial
+        elif network_authorizer is not None:
+            _body, allow_net, allow_localhost = _parse_task_network_directives(cmd)
+            if (allow_net or allow_localhost) and not network_authorizer(
+                row, getattr(row, "network_authorization", "") or ""
+            ):
+                reason = getattr(network_authorizer, "last_error", "") or "denied"
+                return "failed", {
+                    "error": f"verifier refused: {reason}",
+                    "context": "egress_denied",
+                }
+        try:
+            status, result = run_shell_task(cmd, timeout=timeout, context=context)
+        except Exception as e:
+            status, result = "failed", {"error": str(e)}
     else:
         handler = (handlers or {}).get(ttype)
         if handler is None:
