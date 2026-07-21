@@ -101,3 +101,154 @@ def test_on_run_event_callbacks_fire(tmp_path):
                on_run_event=lambda ev, row, **kw: events.append((ev, row.task_id, kw.get("status"))))
     assert ("open", "E1", None) in events
     assert ("close", "E1", "completed") in events
+
+
+def _network_row(**overrides):
+    values = {
+        "task_id": "NET",
+        "task": "curl https://example.com\n# allow_net",
+        "submitted_by": "requester",
+        "network_authorization": '{"signed":true}',
+    }
+    values.update(overrides)
+    return TaskRow(**values)
+
+
+def _localhost_row(**overrides):
+    values = {
+        "task_id": "LOCAL",
+        "task": "curl http://127.0.0.1:11434\n# allow_localhost",
+        "submitted_by": "requester",
+        "network_authorization": '{"signed":true}',
+    }
+    values.update(overrides)
+    return TaskRow(**values)
+
+
+@pytest.mark.parametrize(
+    ("row", "authorizer", "error"),
+    [
+        (_network_row(), None, "verifier unavailable"),
+        (_localhost_row(), None, "verifier unavailable"),
+        (_network_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
+        (_localhost_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
+        (_network_row(network_authorization=""), lambda *_: True, "signed envelope missing"),
+        (_localhost_row(network_authorization=""), lambda *_: True, "signed envelope missing"),
+        (_network_row(), lambda *_: False, "verifier refused"),
+        (_localhost_row(), lambda *_: False, "verifier refused"),
+    ],
+)
+def test_network_request_denied_before_shell_launch(
+    monkeypatch, row, authorizer, error
+):
+    launched = []
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: launched.append(True) or ("completed", {}),
+    )
+    status, result = kexec.execute_task_row(row, network_authorizer=authorizer)
+    assert status == "failed"
+    assert error in result["error"]
+    assert launched == []
+
+
+def test_network_authorizer_exception_denies_before_shell_launch(monkeypatch):
+    launched = []
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: launched.append(True) or ("completed", {}),
+    )
+
+    def broken(*_args):
+        raise RuntimeError("policy backend unavailable")
+
+    status, result = kexec.execute_task_row(
+        _network_row(), network_authorizer=broken
+    )
+    assert status == "failed"
+    assert "verifier error" in result["error"]
+    assert launched == []
+
+
+def test_network_authorizer_receives_full_row_and_envelope(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: ("completed", {"stdout": "allowed"}),
+    )
+    row = _network_row()
+
+    def authorize(received_row, envelope):
+        seen["row"] = received_row
+        seen["envelope"] = envelope
+        return True
+
+    status, result = kexec.execute_task_row(row, network_authorizer=authorize)
+    assert status == "completed"
+    assert result["stdout"] == "allowed"
+    assert seen == {"row": row, "envelope": row.network_authorization}
+
+
+def test_localhost_authorizer_receives_full_row_and_envelope(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: ("completed", {"stdout": "allowed"}),
+    )
+    row = _localhost_row()
+
+    def authorize(received_row, envelope):
+        seen["row"] = received_row
+        seen["envelope"] = envelope
+        return True
+
+    status, result = kexec.execute_task_row(row, network_authorizer=authorize)
+    assert status == "completed"
+    assert result["stdout"] == "allowed"
+    assert seen == {"row": row, "envelope": row.network_authorization}
+
+
+def test_isolated_task_bypasses_network_authorizer(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: ("completed", {"stdout": "isolated"}),
+    )
+    status, _ = kexec.execute_task_row(
+        TaskRow(task_id="ISO", task="echo safe"),
+        network_authorizer=lambda *_: called.append(True) or False,
+    )
+    assert status == "completed"
+    assert called == []
+
+
+def test_worker_threads_network_authorizer_to_executor(tmp_path, monkeypatch):
+    q = _queue(tmp_path)
+    q.submit(
+        "NET-WORKER",
+        "curl https://example.com\n# allow_net",
+        submitted_by="requester",
+        network_authorization='{"signed":true}',
+    )
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: ("completed", {"stdout": "authorized"}),
+    )
+    seen = []
+    run_worker(
+        q,
+        once=True,
+        slots=1,
+        network_authorizer=lambda row, envelope: seen.append(
+            (row.task_id, envelope)
+        )
+        or True,
+    )
+    assert q.get("NET-WORKER")["status"] == "completed"
+    assert seen == [("NET-WORKER", '{"signed":true}')]

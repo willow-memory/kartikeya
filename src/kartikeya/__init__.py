@@ -10,12 +10,17 @@ Public surface:
 from __future__ import annotations
 
 from . import lanes
-from .execute import drain_claimed_tasks, execute_task_row, run_shell_task
+from .execute import (
+    NetworkAuthorizer,
+    drain_claimed_tasks,
+    execute_task_row,
+    run_shell_task,
+)
 from .queue import QueueStats, SqliteTaskQueue, TaskQueue, TaskRow
 from .task_scan import check_kart_task
 from .worker import run_worker
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 __all__ = [
     "TaskQueue",
@@ -25,6 +30,7 @@ __all__ = [
     "lanes",
     "check_kart_task",
     "run_shell_task",
+    "NetworkAuthorizer",
     "execute_task_row",
     "drain_claimed_tasks",
     "run_worker",

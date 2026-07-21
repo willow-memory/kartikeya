@@ -22,6 +22,14 @@ def _python_name() -> str:
     return "python.exe" if os.name == "nt" else "python3"
 
 
+def _looks_like_willow_mcp(root: Path) -> bool:
+    return (root / "src" / "willow_mcp").is_dir()
+
+
+def _looks_like_fleet(root: Path) -> bool:
+    return (root / "core" / "kart_sandbox.py").is_file() or (root / "core" / "pg_bridge.py").is_file()
+
+
 def venv_candidates(root: Path | None = None) -> list[Path]:
     """Return candidate venv directories in preference order.
 
@@ -34,8 +42,12 @@ def venv_candidates(root: Path | None = None) -> list[Path]:
     """
     candidates: list[Path] = []
     if root is not None:
-        candidates.append(root / ".venv-dev")
-        candidates.append(root / ".venv")
+        if _looks_like_willow_mcp(root) and not _looks_like_fleet(root):
+            candidates.append(root / ".venv")
+            candidates.append(root / ".venv-dev")
+        else:
+            candidates.append(root / ".venv-dev")
+            candidates.append(root / ".venv")
     for raw in os.environ.get("KART_EXTRA_VENVS", "").split(os.pathsep):
         raw = raw.strip()
         if raw:

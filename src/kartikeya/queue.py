@@ -33,6 +33,7 @@ class TaskRow:
     # that doesn't leaves it "".
     network_authorization: str = ""
     status: str = "running"
+    network_authorization: str = ""
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ class SqliteTaskQueue(TaskQueue):
         task         TEXT NOT NULL,
         agent        TEXT NOT NULL DEFAULT 'kart',
         submitted_by TEXT NOT NULL DEFAULT '',
+        network_authorization TEXT NOT NULL DEFAULT '',
         status       TEXT NOT NULL DEFAULT 'pending',
         result       TEXT,
         created_at   TEXT NOT NULL DEFAULT (datetime('now')),
@@ -102,6 +104,14 @@ class SqliteTaskQueue(TaskQueue):
         self._path = str(db_path)
         with self._connect() as conn:
             conn.executescript(self._SCHEMA)
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            if "network_authorization" not in columns:
+                conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN network_authorization "
+                    "TEXT NOT NULL DEFAULT ''"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, isolation_level=None)
@@ -115,7 +125,8 @@ class SqliteTaskQueue(TaskQueue):
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                "SELECT task_id, task, agent, submitted_by FROM tasks "
+                "SELECT task_id, task, agent, submitted_by, network_authorization "
+                "FROM tasks "
                 "WHERE status='pending' AND agent=? "
                 "ORDER BY created_at LIMIT ?",
                 (agent, limit),
@@ -132,6 +143,7 @@ class SqliteTaskQueue(TaskQueue):
                 task=r["task"],
                 agent=r["agent"],
                 submitted_by=r["submitted_by"] or "",
+                network_authorization=r["network_authorization"] or "",
             )
             for r in rows
         ]
@@ -167,12 +179,21 @@ class SqliteTaskQueue(TaskQueue):
         )
 
     # ── test/host convenience — not part of the TaskQueue contract ──────────
-    def submit(self, task_id: str, task: str, *, agent: str = "kart", submitted_by: str = "") -> None:
+    def submit(
+        self,
+        task_id: str,
+        task: str,
+        *,
+        agent: str = "kart",
+        submitted_by: str = "",
+        network_authorization: str = "",
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO tasks (task_id, task, agent, submitted_by, status) "
-                "VALUES (?, ?, ?, ?, 'pending')",
-                (task_id, task, agent, submitted_by),
+                "INSERT INTO tasks "
+                "(task_id, task, agent, submitted_by, network_authorization, status) "
+                "VALUES (?, ?, ?, ?, ?, 'pending')",
+                (task_id, task, agent, submitted_by, network_authorization),
             )
 
     def get(self, task_id: str) -> dict | None:

@@ -28,6 +28,9 @@ _FENCE_RE = re.compile(r"```(bash|sh|python3?|python)?\n?(.*?)```", re.DOTALL)
 # Optional task-type handlers a host may register. Signature:
 #   handler(row: TaskRow, *, timeout: int | None, context: str) -> tuple[str, dict]
 TaskTypeHandler = Callable[..., "tuple[str, dict]"]
+# A host authorizer receives the complete claimed row and the opaque signed
+# envelope carried by the queue. Only the literal bool True authorizes egress.
+NetworkAuthorizer = Callable[[TaskRow, str], bool]
 
 
 def kart_timeout(context: str = "poll") -> int:
@@ -195,13 +198,44 @@ def _task_type(cmd: str, row: TaskRow) -> str:
     return "shell"
 
 
+def _fleet_network_request(row: TaskRow, cmd: str) -> bool:
+    """True when a task crosses the network boundary with fleet attribution."""
+    from .sandbox import task_requests_shared_network
+
+    if not task_requests_shared_network(cmd):
+        return False
+    return bool(row.submitted_by.strip() or row.network_authorization.strip())
+
+
+def _network_denial(
+    row: TaskRow,
+    authorizer: NetworkAuthorizer | None,
+) -> dict | None:
+    """Return a denial result for a fleet-attributed network request, or None."""
+    if authorizer is None:
+        return {"error": "network_authorization_denied: verifier unavailable"}
+    if not row.submitted_by.strip():
+        return {"error": "network_authorization_denied: submitted_by missing"}
+    envelope = row.network_authorization
+    if not envelope:
+        return {"error": "network_authorization_denied: signed envelope missing"}
+    try:
+        allowed = authorizer(row, envelope)
+    except Exception:
+        return {"error": "network_authorization_denied: verifier error"}
+    if allowed is not True:
+        reason = getattr(authorizer, "last_error", "") or "denied"
+        return {"error": f"verifier refused: {reason}", "context": "egress_denied"}
+    return None
+
+
 def execute_task_row(
     row: TaskRow,
     *,
     timeout: int | None = None,
     context: str = "poll",
     handlers: dict[str, TaskTypeHandler] | None = None,
-    network_authorizer: "Callable[[TaskRow, str], bool] | None" = None,
+    network_authorizer: NetworkAuthorizer | None = None,
 ) -> tuple[str, dict]:
     """Route one claimed task row. Returns (status, result).
 
@@ -221,7 +255,11 @@ def execute_task_row(
     ttype = _task_type(cmd, row)
 
     if ttype == "shell":
-        if network_authorizer is not None:
+        if _fleet_network_request(row, cmd):
+            denial = _network_denial(row, network_authorizer)
+            if denial:
+                return "failed", denial
+        elif network_authorizer is not None:
             _body, allow_net, allow_localhost = _parse_task_network_directives(cmd)
             if (allow_net or allow_localhost) and not network_authorizer(
                 row, getattr(row, "network_authorization", "") or ""
@@ -273,6 +311,7 @@ def drain_claimed_tasks(
     *,
     context: str = "poll",
     handlers: dict[str, TaskTypeHandler] | None = None,
+    network_authorizer: NetworkAuthorizer | None = None,
     log_prefix: str = "kart",
 ) -> list[tuple[str, str, dict]]:
     """Execute claimed rows and record terminal state via the TaskQueue.
@@ -282,7 +321,10 @@ def drain_claimed_tasks(
     outcomes: list[tuple[str, str, dict]] = []
     for row in rows:
         status, result = execute_task_row(
-            row, context=context, handlers=handlers
+            row,
+            context=context,
+            handlers=handlers,
+            network_authorizer=network_authorizer,
         )
         stored = trim_task_result(result, status)
         try:
