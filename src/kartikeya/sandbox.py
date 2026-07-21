@@ -314,7 +314,8 @@ def collect_mcp_trust_ro_overlays(root: Path | None = None) -> list[Path]:
     writable from inside the sandbox — the one control described as the kill
     switch was the one the untrusted runtime could write. Overlay them
     read-only exactly as B-14 did for mcp_apps/: settings.global.json (canonical,
-    also under config/), consent.json (legacy mirror).
+    also under config/), consent.json (legacy mirror at home root and under
+    config/).
     """
     from .home import willow_home, willow_home_alias
 
@@ -333,6 +334,7 @@ def collect_mcp_trust_ro_overlays(root: Path | None = None) -> list[Path]:
             base / "settings.global.json",
             base / "config" / "settings.global.json",
             base / "consent.json",
+            base / "config" / "consent.json",
         )
         for trust in candidates:
             try:
