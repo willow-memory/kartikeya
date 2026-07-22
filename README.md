@@ -15,10 +15,12 @@ host, no required database server.
 
 ## Status
 
-**Pre-alpha, under active extraction.** This repo is the target of a staged lift
-described in `docs/DESIGN.md`. The scaffold and the `TaskQueue` interface are in
-place; the sandbox/worker/execute core is being decoupled from its origin and
-brought over next.
+**Extracted and published.** The sandbox/worker/execute core is fully landed
+(`sandbox.py`, `worker.py`, `execute.py`, `queue.py`), tested, and released on
+PyPI as `kartikeya` (0.0.7) — `pip install kartikeya`, or `pip install
+willow-mcp` which depends on it. The staged lift in `docs/DESIGN.md` is done
+through stage 4; stage 5 (willow-2.0 deleting its `core/kart_*` copy) is
+tracked in willow-mcp#111.
 
 ## Design goals
 

@@ -1,6 +1,9 @@
 # Spec: Kart Lift — extract a standalone `kart` package
 
-Status: DRAFT for review (2026-07-08). Engineering spec for the migration whose
+Status: LANDED through stage 4 (updated 2026-07-22; was DRAFT 2026-07-08) —
+stages 1-4 shipped and released (PyPI 0.0.7); stage 5 tracked in
+willow-mcp#111; stage 6 optional. Kept as the engineering record for the
+migration whose
 direction is set in `kart-productionization.md`. Resolves B-22.
 
 **Decisions locked (operator, 2026-07-08):**
@@ -191,7 +194,7 @@ Spans two (maybe three) repos; sequence willow-mcp value first.
   (release-state hold), until explicitly released — even though its surface is
   lower-risk than willow-mcp's OAuth layer.
 
-**Still open:**
-- Confirm PyPI `kartikeya` is claimable (almost certainly; verify at extract
-  time) and that the `kart` alias console-script name doesn't collide.
+**Resolved (2026-07-22):**
+- PyPI `kartikeya` claimed and published (0.0.7, tag-triggered release
+  workflow); the `kart` console-script alias shipped without collision.
 ```
