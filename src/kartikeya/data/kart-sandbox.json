@@ -3,8 +3,6 @@
   "description": "Kartikeya bwrap mount policy (product-neutral default). Override via $KART_SANDBOX_CONFIG or $WILLOW_HOME/kart-sandbox.json to add host/fleet-specific paths without editing code.",
   "env_prefixes": [
     "WILLOW_",
-    "PG",
-    "POSTGRES",
     "OLLAMA_",
     "GIT_",
     "TWINE_",
@@ -22,6 +20,10 @@
     "AWS_",
     "DBUS_",
     "XDG_"
+  ],
+  "db_env_prefixes": [
+    "PG",
+    "POSTGRES"
   ],
   "credential_env_prefixes": [
     "TWINE_",
@@ -47,8 +49,7 @@
   "bind_read_write": [
     "{{WILLOW_ROOT}}",
     "{{HOME}}/.willow",
-    "{{HOME}}/.local",
-    "/var/run/postgresql"
+    "{{HOME}}/.local"
   ],
   "bind_try": [
     "{{WILLOW_ROOT}}/.venv-dev",
@@ -81,6 +82,7 @@
     "github_ro": "~/github is read-only by default; WILLOW_ROOT + its worktrees nest read-write on top. Hosts promote additional repos to RW via an override config.",
     "ssh_dropped": "~/.ssh is not bound. SSH git uses SSH_AUTH_SOCK (via /run/user) + known_hosts (ro), both only on allow_net. Private keys never enter the sandbox.",
     "creds_gated": "credential_env_prefixes (and ~/.config/gh, ~/.netrc) are present only on allow_net. A no-network task gets zero credentials.",
+    "db_gated": "db_env_prefixes and /var/run/postgresql socket bind are present only on allow_db. Default tasks cannot reach the local Postgres lane.",
     "localhost_tier": "# allow_localhost shares the host network namespace (loopback works) but still strips credentials. Weaker than --unshare-net; prefer over allow_net for local-only work.",
     "tmp_tmpfs": "/tmp + /dev/shm are private tmpfs, not host binds."
   }

@@ -99,6 +99,9 @@ def test_vendored_default_config_loads():
     # fleet-only prefixes are gone from the shipped default
     assert "GROVE_" not in cfg["env_prefixes"]
     assert "SAFE_" not in cfg["env_prefixes"]
+    assert "PG" not in cfg["env_prefixes"]
+    assert "POSTGRES" in cfg["db_env_prefixes"]
+    assert "/var/run/postgresql" not in cfg["bind_read_write"]
 
 
 def test_kart_sandbox_config_env_override(tmp_path, monkeypatch):
@@ -137,10 +140,49 @@ def test_task_allows_localhost_exact_line_match():
 
 
 def test_parse_task_network_strips_directives():
-    body, net, local = sandbox.parse_task_network("curl x\n# allow_net")
+    body, net, local, db = sandbox.parse_task_network("curl x\n# allow_net")
     assert net is True
+    assert db is False
     assert "# allow_net" not in body
     assert body.strip() == "curl x"
+
+
+def test_task_allows_db_exact_line_match():
+    assert sandbox.task_allows_db("echo hi\n# allow_db") is True
+    assert sandbox.task_allows_db("echo hi") is False
+    assert sandbox.task_allows_db("echo # allow_db") is False
+
+
+def test_kart_env_default_excludes_pg_vars(monkeypatch):
+    monkeypatch.setenv("PGHOST", "/run/postgresql")
+    monkeypatch.setenv("POSTGRES_USER", "fleet")
+    env = sandbox.kart_env(allow_db=False)
+    assert "PGHOST" not in env
+    assert "POSTGRES_USER" not in env
+
+
+def test_kart_env_allow_db_includes_pg_vars(monkeypatch):
+    monkeypatch.setenv("PGHOST", "/run/postgresql")
+    monkeypatch.setenv("POSTGRES_USER", "fleet")
+    env = sandbox.kart_env(allow_db=True)
+    assert env["PGHOST"] == "/run/postgresql"
+    assert env["POSTGRES_USER"] == "fleet"
+
+
+def test_build_bwrap_argv_db_socket_only_when_allow_db(monkeypatch):
+    real_exists = sandbox.Path.exists
+
+    def exists(self):
+        if str(self) == "/var/run/postgresql":
+            return True
+        return real_exists(self)
+
+    monkeypatch.setattr(sandbox.Path, "exists", exists)
+    monkeypatch.setattr(sandbox.os.path, "isdir", lambda _p: True)
+    isolated = sandbox.build_bwrap_argv(allow_db=False)
+    assert not any("postgresql" in part for part in isolated)
+    with_db = sandbox.build_bwrap_argv(allow_db=True)
+    assert any("postgresql" in part for part in with_db)
 
 
 def test_bwrap_available_returns_bool():

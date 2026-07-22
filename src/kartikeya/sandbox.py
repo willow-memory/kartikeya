@@ -32,6 +32,7 @@ _log = logging.getLogger("kart.sandbox")
 
 _ALLOW_NET_DIRECTIVE = "# allow_net"
 _ALLOW_LOCALHOST_DIRECTIVE = "# allow_localhost"
+_ALLOW_DB_DIRECTIVE = "# allow_db"
 _DEFAULT_CONFIG = Path(__file__).resolve().parent / "data" / "kart-sandbox.json"
 
 # Credential-bearing env prefixes (GAP-B). Only passed into the sandbox when a task
@@ -390,6 +391,7 @@ def build_bwrap_argv(
     *,
     allow_net: bool = False,
     allow_localhost: bool = False,
+    allow_db: bool = False,
     root: Path | None = None,
 ) -> list[str]:
     args = ["bwrap"]
@@ -485,14 +487,13 @@ def build_bwrap_argv(
     ):
         args += ["--symlink", str(_canonical_willow), str(_home_willow)]
 
-    # psycopg2's default socket dir is /var/run/postgresql. collect_bind_mounts
-    # resolves the /var/run → /run symlink, so the socket ends up mounted at
-    # /run/postgresql but never at /var/run/postgresql. Add a direct bind at
-    # the original unresolved path so pg_bridge finds the socket without
-    # needing PGHOST set explicitly.
-    _pg_sock = Path("/var/run/postgresql")
-    if _pg_sock.exists():
-        args += ["--bind", str(_pg_sock.resolve()), str(_pg_sock)]
+    # psycopg2's default socket dir is /var/run/postgresql. Only bind it when the
+    # task opted into the local Postgres lane (allow_db) — default tasks must not
+    # reach the production socket.
+    if allow_db:
+        _pg_sock = Path("/var/run/postgresql")
+        if _pg_sock.exists():
+            args += ["--bind", str(_pg_sock.resolve()), str(_pg_sock)]
 
     if allow_net:
         # Credentials are present ONLY on a network-opted task (S1, GAP-B/C).
@@ -550,6 +551,10 @@ def task_allows_localhost(task_text: str) -> bool:
     return any(line.strip() == _ALLOW_LOCALHOST_DIRECTIVE for line in task_text.splitlines())
 
 
+def task_allows_db(task_text: str) -> bool:
+    return any(line.strip() == _ALLOW_DB_DIRECTIVE for line in task_text.splitlines())
+
+
 def task_requests_shared_network(task_text: str) -> bool:
     """Whether a task asks to share the host network namespace.
 
@@ -561,13 +566,14 @@ def task_requests_shared_network(task_text: str) -> bool:
     return task_allows_network(task_text) or task_allows_localhost(task_text)
 
 
-def parse_task_network(task_text: str) -> tuple[str, bool, bool]:
-    """Strip network directives; return (cmd_body, allow_net, allow_localhost)."""
+def parse_task_network(task_text: str) -> tuple[str, bool, bool, bool]:
+    """Strip sandbox directives; return (cmd_body, allow_net, allow_localhost, allow_db)."""
     allow_net = task_allows_network(task_text)
     allow_localhost = (not allow_net) and task_allows_localhost(task_text)
-    skip = {_ALLOW_NET_DIRECTIVE, _ALLOW_LOCALHOST_DIRECTIVE}
+    allow_db = task_allows_db(task_text)
+    skip = {_ALLOW_NET_DIRECTIVE, _ALLOW_LOCALHOST_DIRECTIVE, _ALLOW_DB_DIRECTIVE}
     lines = [line for line in task_text.splitlines() if line.strip() not in skip]
-    return "\n".join(lines).strip(), allow_net, allow_localhost
+    return "\n".join(lines).strip(), allow_net, allow_localhost, allow_db
 
 
 def _parse_fleet_env_file(path: Path, prefixes: tuple[str, ...]) -> dict[str, str]:
@@ -598,10 +604,14 @@ def kart_env(
     *,
     allow_net: bool = False,
     allow_localhost: bool = False,
+    allow_db: bool = False,
 ) -> dict[str, str]:
     repo = root or willow_repo_root()
     cfg = load_sandbox_config(repo)
-    prefixes = tuple(cfg.get("env_prefixes") or ("WILLOW_", "GROVE_", "PG", "POSTGRES", "OLLAMA_", "GIT_", "ANTHROPIC_", "GROQ_"))
+    prefixes = tuple(cfg.get("env_prefixes") or ("WILLOW_", "GROVE_", "OLLAMA_", "GIT_", "ANTHROPIC_", "GROQ_"))
+    db_prefixes = tuple(cfg.get("db_env_prefixes") or ("PG", "POSTGRES"))
+    if allow_db:
+        prefixes = prefixes + db_prefixes
     # GAP-B: credential-bearing env vars only reach the sandbox on a network-opted
     # task. A no-network task cannot exfil keys it was never handed.
     cred_prefixes = tuple(cfg.get("credential_env_prefixes") or _DEFAULT_CREDENTIAL_PREFIXES)
@@ -615,6 +625,7 @@ def kart_env(
         "WILLOW_IN_KART": "1",
         "WILLOW_KART_ALLOW_NET": "1" if allow_net else "0",
         "WILLOW_KART_ALLOW_LOCALHOST": "1" if allow_localhost and not allow_net else "0",
+        "WILLOW_KART_ALLOW_DB": "1" if allow_db else "0",
     }
     for key, val in os.environ.items():
         if key.startswith(prefixes):
@@ -679,11 +690,9 @@ def kart_env(
         except Exception:
             pass
 
-    # Inside bwrap, /var/run is not present (collect_bind_mounts resolves the
-    # /var/run → /run symlink away). psycopg2 with host=None defaults to
-    # /var/run/postgresql, which doesn't exist in the container.
-    # Set WILLOW_PG_HOST to the real socket directory so pg_bridge finds it.
-    if not env.get("WILLOW_PG_HOST"):
+    # Inside bwrap, /var/run is not present unless allow_db mounted the socket.
+    # psycopg2 with host=None defaults to /var/run/postgresql.
+    if allow_db and not env.get("WILLOW_PG_HOST"):
         import glob as _glob
         for _sock in _glob.glob("/run/postgresql/.s.PGSQL.*") + _glob.glob("/tmp/.s.PGSQL.*"):
             env["WILLOW_PG_HOST"] = str(Path(_sock).parent)
@@ -709,6 +718,7 @@ def sandbox_manifest(
     *,
     allow_net: bool = False,
     allow_localhost: bool = False,
+    allow_db: bool = False,
     root: Path | None = None,
 ) -> dict:
     """KP3 — declare the boundary so a caller can tell 'empty' from 'absent'.
@@ -729,7 +739,7 @@ def sandbox_manifest(
     except Exception:
         pass
     path_dirs = kart_env(
-        root, allow_net=allow_net, allow_localhost=allow_localhost
+        root, allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db
     ).get("PATH", "").split(":")
     if allow_net:
         network_mode = "full"
@@ -741,6 +751,7 @@ def sandbox_manifest(
         "engine": engine,
         "allow_net": allow_net,
         "allow_localhost": allow_localhost and not allow_net,
+        "allow_db": allow_db,
         "network_mode": network_mode,
         "bound_rw": sorted(bound_rw),
         "bound_ro": sorted(bound_ro),
@@ -951,6 +962,7 @@ def run_shell(
     timeout: int = 120,
     allow_net: bool = False,
     allow_localhost: bool = False,
+    allow_db: bool = False,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
 ) -> dict:
@@ -959,7 +971,7 @@ def run_shell(
     Returns {returncode, stdout, stderr, elapsed_s, sandbox: bwrap|plain}.
     """
     started = time.time()
-    run_env = kart_env(allow_net=allow_net, allow_localhost=allow_localhost)
+    run_env = kart_env(allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db)
     if env:
         run_env.update(env)
     if cwd:
@@ -994,7 +1006,7 @@ def run_shell(
     status_file = None
     if use_bwrap():
         prefix = build_bwrap_argv(
-            allow_net=allow_net, allow_localhost=allow_localhost
+            allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db
         )
         # KP3/S15: --json-status-fd lets us tell a sandbox-SETUP failure (mount/ns
         # error, bwrap exits before exec) from a COMMAND failure. bwrap writes
@@ -1098,6 +1110,7 @@ def run_shell_result_for_task(
     timeout: int = 120,
     allow_net: bool = False,
     allow_localhost: bool = False,
+    allow_db: bool = False,
 ) -> tuple[str, dict]:
     """Normalize run_shell output for pg.task_complete(status, result)."""
     raw = run_shell(
@@ -1105,6 +1118,7 @@ def run_shell_result_for_task(
         timeout=timeout,
         allow_net=allow_net,
         allow_localhost=allow_localhost,
+        allow_db=allow_db,
     )
     status = "completed" if raw.get("returncode") == 0 and raw.get("error") != "timeout" else "failed"
     result = {
@@ -1144,6 +1158,7 @@ def run_shell_result_for_task(
         manifest = sandbox_manifest(
             allow_net=allow_net,
             allow_localhost=allow_localhost,
+            allow_db=allow_db,
             root=None,
         )
         notes = unreachable_notes(cmd, manifest)
@@ -1204,6 +1219,7 @@ def write_task_log(
         env = kart_env(
             allow_net=bool(manifest.get("allow_net")),
             allow_localhost=bool(manifest.get("allow_localhost")),
+            allow_db=bool(manifest.get("allow_db")),
         )
         meta = {
             "task_id": str(task_id),
@@ -1216,6 +1232,7 @@ def write_task_log(
             "sandbox_setup": result.get("sandbox_setup"),
             "allow_net": manifest.get("allow_net"),
             "allow_localhost": manifest.get("allow_localhost"),
+            "allow_db": manifest.get("allow_db"),
             "network_mode": manifest.get("network_mode"),
             "cwd": os.getcwd(),
             "written_at": _dt.datetime.now().astimezone().isoformat(),

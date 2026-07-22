@@ -33,6 +33,7 @@ def test_network_directive_lines_are_not_themselves_flagged(task_scan_reset=None
     # the directive line is stripped before scanning.
     assert task_scan.check_kart_task("echo hi\n# allow_net") is None
     assert task_scan.check_kart_task("echo hi\n# allow_localhost") is None
+    assert task_scan.check_kart_task("echo hi\n# allow_db") is None
 
 
 # ── block list: dangerous fragments are refused ────────────────────────────
