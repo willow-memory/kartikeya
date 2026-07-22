@@ -175,21 +175,50 @@ def test_resource_limits_env_overrides(monkeypatch):
 
 
 def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatch):
-    # No KART_CGROUP_PARENT → the cgroup path is unavailable, so we get rlimits.
+    # No delegated parent → in-sandbox prlimit/ulimit wrap, not host preexec.
     monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
+    monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
     preexec, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024 ** 2, "pids": 64})
     assert mode == "rlimit"
-    assert callable(preexec) and cleanup is None
+    assert preexec is None and cleanup is None
+    wrapped = sandbox.wrap_task_with_rlimits(
+        "echo hi", {"mem": 256 * 1024 ** 2, "pids": 64}
+    )
+    assert "prlimit" in wrapped or "ulimit" in wrapped
+    assert "--nproc=64" in wrapped or "ulimit -u 64" in wrapped
+    assert "--as=" not in wrapped
+
+
+def test_limits_context_uses_cgroup_when_parent_delegated(monkeypatch):
+    monkeypatch.setattr(sandbox, "_try_make_cgroup", lambda limits: "/fake/kart-leaf")
+    preexec, cleanup, mode = sandbox._limits_context({"mem": 4096, "pids": 8})
+    assert mode == "cgroup"
+    assert callable(preexec) and callable(cleanup)
+
+
+_LARGE_VA_CMD = (
+    "python3 -c \"import mmap; m=mmap.mmap(-1, 4*1024**3); m[0:1]=b'x'; print('ok')\""
+)
+
+
+def test_large_va_small_rss_survives_rlimit_fallback(monkeypatch):
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
+    monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
+    monkeypatch.setenv("KART_MEM_MAX", "512M")
+    monkeypatch.delenv("KART_RLIMIT_USE_AS", raising=False)
+    result = sandbox.run_shell(_LARGE_VA_CMD, timeout=30)
+    assert result["returncode"] == 0, result
+    assert "ok" in result["stdout"]
+    assert result.get("resource_limit") == "rlimit"
 
 
 @pytest.mark.skipif(sandbox._resource is None, reason="POSIX rlimits unavailable")
-def test_rlimit_actually_contains_a_memory_hog(monkeypatch):
-    # End-to-end: with a low address-space cap, a task that allocates past it must
-    # fail rather than eat host memory; a small task under the cap runs fine.
-    # Plain mode (no bwrap) isolates the rlimit mechanism from sandbox bring-up.
+def test_rlimit_as_opt_in_contains_memory_hog(monkeypatch):
     monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
     monkeypatch.setenv("KART_MEM_MAX", "512M")
-    monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
+    monkeypatch.setenv("KART_RLIMIT_USE_AS", "1")
+    monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
 
     hog = sandbox.run_shell(
         "python3 -c 'x = bytearray(900*1024*1024); print(len(x))'", timeout=30)

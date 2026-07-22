@@ -44,6 +44,19 @@ pip install "kartikeya[llm]"       # + LLM-workflow task type
 
 ## Quickstart
 
+Resource caps (memory + PID limits) prefer a delegated cgroup parent. On a fresh
+install, run once:
+
+```
+kartikeya setup-cgroup    # installs ~/.config/systemd/user/kart.slice
+kartikeya cgroup-status   # should print ready: /sys/fs/cgroup/...
+```
+
+Add the printed `export KART_CGROUP_PARENT=...` line to your shell profile. Without
+a delegated parent, Kart falls back to task-scoped `prlimit`/`ulimit` inside the
+sandbox (PID cap by default; virtual-memory cap only with `KART_RLIMIT_USE_AS=1`).
+`WILLOW_KART_NO_RLIMIT=1` disables caps entirely (escape hatch only).
+
 _Coming with stage 2 — once the worker core lands, this section documents
 `kartikeya worker` end to end (submit → worker runs → poll)._
 
