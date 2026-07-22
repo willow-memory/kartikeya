@@ -39,7 +39,7 @@ def kart_timeout(context: str = "poll") -> int:
     return int(os.environ.get("KART_POLL_TIMEOUT", "120"))
 
 
-def _parse_task_network_directives(task_text: str) -> tuple[str, bool, bool]:
+def _parse_task_network_directives(task_text: str) -> tuple[str, bool, bool, bool]:
     from .sandbox import parse_task_network
 
     return parse_task_network(task_text)
@@ -104,6 +104,7 @@ def _run_one_shell(
     timeout: int,
     allow_net: bool,
     allow_localhost: bool,
+    allow_db: bool,
 ) -> tuple[str, dict]:
     from .sandbox import bwrap_available, run_shell_result_for_task, use_bwrap
 
@@ -115,6 +116,7 @@ def _run_one_shell(
         timeout=timeout,
         allow_net=allow_net,
         allow_localhost=allow_localhost,
+        allow_db=allow_db,
     )
     return status, _normalize_shell_result(result)
 
@@ -133,7 +135,7 @@ def run_shell_task(
         return "failed", blocked
 
     timeout = timeout if timeout is not None else kart_timeout(context)
-    cmd_body, allow_net, allow_localhost = _parse_task_network_directives(task_text)
+    cmd_body, allow_net, allow_localhost, allow_db = _parse_task_network_directives(task_text)
     blocks = _iter_fenced_blocks(cmd_body)
 
     if blocks:
@@ -154,6 +156,7 @@ def run_shell_task(
                 timeout=timeout,
                 allow_net=allow_net,
                 allow_localhost=allow_localhost,
+                allow_db=allow_db,
             )
             chunk = result.get("stdout") or ""
             err = result.get("stderr") or result.get("error") or ""
@@ -183,6 +186,7 @@ def run_shell_task(
         timeout=timeout,
         allow_net=allow_net,
         allow_localhost=allow_localhost,
+        allow_db=allow_db,
     )
     result["steps"] = 1
     return status, result
@@ -260,7 +264,7 @@ def execute_task_row(
             if denial:
                 return "failed", denial
         elif network_authorizer is not None:
-            _body, allow_net, allow_localhost = _parse_task_network_directives(cmd)
+            _body, allow_net, allow_localhost, allow_db = _parse_task_network_directives(cmd)
             if (allow_net or allow_localhost) and not network_authorizer(
                 row, getattr(row, "network_authorization", "") or ""
             ):

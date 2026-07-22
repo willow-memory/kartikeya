@@ -33,7 +33,8 @@ from .security_scan import (
 
 _ALLOW_NET = "# allow_net"
 _ALLOW_LOCALHOST = "# allow_localhost"
-_NETWORK_DIRECTIVES = frozenset({_ALLOW_NET, _ALLOW_LOCALHOST})
+_ALLOW_DB = "# allow_db"
+_NETWORK_DIRECTIVES = frozenset({_ALLOW_NET, _ALLOW_LOCALHOST, _ALLOW_DB})
 _FENCE_RE = re.compile(r"```(bash|sh|python3?|python)?\n?(.*?)```", re.DOTALL)
 _CHAIN_SPLIT = re.compile(r"\s*&&\s*|\s*\|\|\s*")
 
