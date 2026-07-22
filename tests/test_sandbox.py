@@ -118,6 +118,76 @@ def test_config_falls_back_to_default_when_override_missing(tmp_path, monkeypatc
     assert cfg["env_prefixes"]  # never empty — falls through to vendored default
 
 
+# ── config-source reporting: the fallback must not be silent ───────────────
+#
+# Regression cover for the slice-2 cutover fault (FRANK 73ca45d5). A worker
+# started without KART_SANDBOX_CONFIG ran on the vendored default for 28 hours
+# and dead-lettered the whole batch lane. Nothing in the task result said which
+# policy produced the bind sets, so a reduced manifest was indistinguishable
+# from a legitimately narrow boundary. These assert the distinguisher exists.
+
+def test_resolve_reports_env_override_as_source(tmp_path, monkeypatch):
+    custom = tmp_path / "fleet.json"
+    custom.write_text('{"env_prefixes": ["CUSTOM_"], "bind_read_only": []}')
+    monkeypatch.setenv("KART_SANDBOX_CONFIG", str(custom))
+
+    cfg, source = sandbox.resolve_sandbox_config()
+
+    assert cfg["env_prefixes"] == ["CUSTOM_"]
+    assert source == str(custom)
+    assert sandbox.is_vendored_default(source) is False
+
+
+def test_resolve_reports_vendored_default_when_seam_absent(tmp_path, monkeypatch):
+    # exactly the live fault: no seam in the environment, no fleet policy at
+    # $WILLOW_HOME/kart-sandbox.json — kartikeya silently used its own default.
+    monkeypatch.delenv("KART_SANDBOX_CONFIG", raising=False)
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: tmp_path)
+
+    cfg, source = sandbox.resolve_sandbox_config()
+
+    assert cfg["env_prefixes"]  # still serves a policy — that is the trap
+    assert sandbox.is_vendored_default(source) is True
+
+
+def test_resolve_prefers_willow_home_policy_over_vendored_default(tmp_path, monkeypatch):
+    policy = tmp_path / "kart-sandbox.json"
+    policy.write_text('{"env_prefixes": ["FLEET_"], "bind_read_only": []}')
+    monkeypatch.delenv("KART_SANDBOX_CONFIG", raising=False)
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: tmp_path)
+
+    cfg, source = sandbox.resolve_sandbox_config()
+
+    assert cfg["env_prefixes"] == ["FLEET_"]
+    assert source == str(policy)
+    assert sandbox.is_vendored_default(source) is False
+
+
+def test_manifest_carries_config_source(tmp_path, monkeypatch):
+    custom = tmp_path / "fleet.json"
+    custom.write_text('{"env_prefixes": ["CUSTOM_"], "bind_read_only": []}')
+    monkeypatch.setenv("KART_SANDBOX_CONFIG", str(custom))
+
+    manifest = sandbox.sandbox_manifest()
+
+    # the read-side signal: every task receipt now names the policy that
+    # produced its bind sets.
+    assert manifest["config_source"] == str(custom)
+    assert manifest["config_is_vendored_default"] is False
+
+
+def test_manifest_flags_generic_policy(tmp_path, monkeypatch):
+    monkeypatch.delenv("KART_SANDBOX_CONFIG", raising=False)
+    monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
+    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: tmp_path)
+
+    manifest = sandbox.sandbox_manifest()
+
+    assert manifest["config_is_vendored_default"] is True
+
+
 # ── B-21 contract: the worker's network-directive matching (spec §4) ───────
 
 def test_task_allows_network_exact_line_match():

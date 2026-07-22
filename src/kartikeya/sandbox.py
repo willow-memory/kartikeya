@@ -34,6 +34,9 @@ _ALLOW_NET_DIRECTIVE = "# allow_net"
 _ALLOW_LOCALHOST_DIRECTIVE = "# allow_localhost"
 _ALLOW_DB_DIRECTIVE = "# allow_db"
 _DEFAULT_CONFIG = Path(__file__).resolve().parent / "data" / "kart-sandbox.json"
+# Reported as the manifest's config_source when every candidate was missing or
+# unparseable — distinct from "resolved the vendored default", which is a real file.
+_NO_CONFIG_SOURCE = "<none>"
 
 # Credential-bearing env prefixes (GAP-B). Only passed into the sandbox when a task
 # opts into network (allow_net) — a no-network task receives zero credentials.
@@ -161,13 +164,23 @@ def _render(path_template: str, ctx: dict[str, str]) -> str:
     return os.path.expanduser(out)
 
 
-def load_sandbox_config(root: Path | None = None) -> dict:
-    """Resolve the bwrap mount policy.
+def resolve_sandbox_config(root: Path | None = None) -> tuple[dict, str]:
+    """Resolve the bwrap mount policy AND report which candidate supplied it.
 
     Order: ``$KART_SANDBOX_CONFIG`` → ``$WILLOW_HOME/kart-sandbox.json`` →
     the vendored product-neutral default (`data/kart-sandbox.json`). The
     vendored default always exists, so a standalone install is never left
     without a mount policy.
+
+    Returns ``(config, source)`` where ``source`` is the resolved path, or
+    ``_NO_CONFIG_SOURCE`` when every candidate was missing or unparseable.
+
+    The second element exists because the fallback used to be silent: a fleet
+    worker started without ``$KART_SANDBOX_CONFIG`` in its environment ran on
+    the vendored default indefinitely, producing a reduced mount set that is
+    indistinguishable — from the task result alone — from the fleet policy.
+    Callers that know a fleet policy is expected can now detect the drift
+    instead of inferring it from which paths happen to be missing.
     """
     candidates: list[Path] = []
     env = os.environ.get("KART_SANDBOX_CONFIG", "").strip()
@@ -182,10 +195,25 @@ def load_sandbox_config(root: Path | None = None) -> dict:
     for path in candidates:
         if path.is_file():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                cfg = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-    return {}
+            return cfg, str(path)
+    return {}, _NO_CONFIG_SOURCE
+
+
+def load_sandbox_config(root: Path | None = None) -> dict:
+    """Resolve the bwrap mount policy. See :func:`resolve_sandbox_config`."""
+    return resolve_sandbox_config(root)[0]
+
+
+def is_vendored_default(source: str) -> bool:
+    """True when ``source`` is the package's own product-neutral fallback.
+
+    A fleet install resolving to this has lost its mount policy — the symptom
+    is a reduced bind set, not an error.
+    """
+    return source == str(_DEFAULT_CONFIG)
 
 
 def _discover_worktree_targets(scan_roots: list[Path]) -> list[Path]:
@@ -729,6 +757,7 @@ def sandbox_manifest(
     real absence, with no signal. The manifest is that signal.
     """
     engine = "bwrap" if use_bwrap() else "plain"
+    _cfg, config_source = resolve_sandbox_config(root)
     bound_rw: list[str] = []
     bound_ro: list[str] = []
     try:
@@ -757,6 +786,11 @@ def sandbox_manifest(
         "bound_ro": sorted(bound_ro),
         "tmpfs": ["/tmp", "/dev/shm"] if engine == "bwrap" else [],
         "path_dirs": [p for p in path_dirs if p],
+        # Which mount policy produced the bind sets above. Without this a
+        # reduced manifest reads as a legitimate boundary rather than as a
+        # worker that never found the fleet config.
+        "config_source": config_source,
+        "config_is_vendored_default": is_vendored_default(config_source),
     }
 
 
