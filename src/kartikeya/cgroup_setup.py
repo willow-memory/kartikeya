@@ -6,6 +6,11 @@ import subprocess
 from pathlib import Path
 
 KART_SLICE_UNIT = "kart.slice"
+# systemd honors Delegate= only on service/scope units, not slices — children need
+# memory+pids enabled via cgroup.subtree_control after the slice is started.
+SYSTEMD_CGROUP_PROPERTY = "ControlGroup"
+_REQUIRED_CONTROLLERS = frozenset({"memory", "pids"})
+
 SLICE_UNIT_CONTENT = """[Unit]
 Description=Kart sandbox resource caps (delegated cgroup parent)
 
@@ -22,14 +27,35 @@ def slice_unit_path() -> Path:
     return _user_config_dir() / KART_SLICE_UNIT
 
 
+def _read_space_file(path: str, name: str) -> set[str]:
+    with open(os.path.join(path, name)) as f:
+        return {part.lstrip("+") for part in f.read().split() if part}
+
+
+def controllers_available(path: str) -> bool:
+    """True when memory+pids appear in cgroup.controllers (available to enable)."""
+    try:
+        return _REQUIRED_CONTROLLERS <= _read_space_file(path, "cgroup.controllers")
+    except OSError:
+        return False
+
+
+def subtree_control_enabled(path: str) -> bool:
+    """True when memory+pids are enabled for child cgroups (subtree_control)."""
+    try:
+        return _REQUIRED_CONTROLLERS <= _read_space_file(path, "cgroup.subtree_control")
+    except OSError:
+        return False
+
+
 def is_delegated_cgroup_parent(path: str) -> bool:
-    """True when ``path`` is an empty cgroup with memory+pids controllers."""
+    """True when ``path`` is an empty cgroup with memory+pids delegated to children."""
     if not path or not os.path.isdir(path):
         return False
     try:
-        with open(os.path.join(path, "cgroup.controllers")) as f:
-            controllers = set(f.read().split())
-        if not ({"memory", "pids"} <= controllers):
+        if not controllers_available(path):
+            return False
+        if not subtree_control_enabled(path):
             return False
         with open(os.path.join(path, "cgroup.procs")) as f:
             return f.read().strip() == ""
@@ -37,11 +63,29 @@ def is_delegated_cgroup_parent(path: str) -> bool:
         return False
 
 
+def _cgroup_fs_path(systemd_path: str) -> str | None:
+    rel = (systemd_path or "").strip()
+    if not rel or rel == "-":
+        return None
+    if rel.startswith("/sys/fs/cgroup"):
+        return rel if os.path.isdir(rel) else None
+    candidate = os.path.join("/sys/fs/cgroup", rel.lstrip("/"))
+    return candidate if os.path.isdir(candidate) else None
+
+
 def systemd_cgroup_path(unit: str = KART_SLICE_UNIT) -> str | None:
     """Resolve the cgroup filesystem path for a user systemd unit."""
     try:
         proc = subprocess.run(
-            ["systemctl", "--user", "show", "-p", "ControlGroupPath", "--value", unit],
+            [
+                "systemctl",
+                "--user",
+                "show",
+                "-p",
+                SYSTEMD_CGROUP_PROPERTY,
+                "--value",
+                unit,
+            ],
             capture_output=True,
             text=True,
             timeout=15,
@@ -49,11 +93,21 @@ def systemd_cgroup_path(unit: str = KART_SLICE_UNIT) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    rel = (proc.stdout or "").strip().lstrip("/")
-    if proc.returncode != 0 or not rel or rel == "-":
+    if proc.returncode != 0:
         return None
-    candidate = os.path.join("/sys/fs/cgroup", rel)
-    return candidate if os.path.isdir(candidate) else None
+    return _cgroup_fs_path(proc.stdout)
+
+
+def enable_subtree_control(parent: str) -> str | None:
+    """Write +memory +pids into parent cgroup.subtree_control. Return error or None."""
+    try:
+        with open(os.path.join(parent, "cgroup.subtree_control"), "w") as f:
+            f.write("+memory +pids")
+    except OSError as exc:
+        return f"cannot write cgroup.subtree_control: {exc}"
+    if not subtree_control_enabled(parent):
+        return "memory+pids not enabled in cgroup.subtree_control after write"
+    return None
 
 
 def resolve_cgroup_parent() -> str | None:
@@ -81,6 +135,45 @@ def cgroup_status() -> dict:
         "slice_unit": KART_SLICE_UNIT,
         "slice_unit_path": str(slice_unit_path()),
     }
+
+
+def _worker_env_hint(parent: str) -> str:
+    return (
+        f"For the systemd kart worker: systemctl --user set-environment "
+        f"KART_CGROUP_PARENT={parent} && systemctl --user restart <kart-worker> "
+        "(a shell profile export does not reach user services). "
+        f"CLI convenience only: export KART_CGROUP_PARENT={parent}"
+    )
+
+
+def _failure_hint(status: dict, errors: list[str]) -> str:
+    if errors:
+        return "setup failed: " + "; ".join(errors)
+    auto = status.get("systemd_parent")
+    if auto and os.path.isdir(auto):
+        if not controllers_available(auto):
+            return (
+                f"kart.slice exists at {auto} but memory+pids are not available in "
+                "cgroup.controllers on this host"
+            )
+        if not subtree_control_enabled(auto):
+            return (
+                f"kart.slice exists at {auto} but memory+pids are not enabled in "
+                "cgroup.subtree_control — child cgroups cannot be limited"
+            )
+        try:
+            with open(os.path.join(auto, "cgroup.procs")) as f:
+                if f.read().strip():
+                    return (
+                        f"kart.slice cgroup at {auto} has internal processes — "
+                        "the parent must be empty"
+                    )
+        except OSError:
+            pass
+    return (
+        "kart.slice not reachable — ensure systemd --user is running, then: "
+        "systemctl --user start kart.slice"
+    )
 
 
 def setup_cgroup(*, start: bool = True) -> dict:
@@ -119,6 +212,29 @@ def setup_cgroup(*, start: bool = True) -> dict:
         except (OSError, subprocess.SubprocessError) as exc:
             errors.append(f"start {KART_SLICE_UNIT}: {exc}")
 
+    parent = systemd_cgroup_path()
+    if parent and not errors:
+        err = enable_subtree_control(parent)
+        if err:
+            errors.append(err)
+        else:
+            # Re-assert after reload — subtree_control can reset on daemon-reload.
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "daemon-reload"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=True,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append(f"post-delegate daemon-reload: {exc}")
+            if not errors:
+                parent = systemd_cgroup_path() or parent
+                err = enable_subtree_control(parent)
+                if err:
+                    errors.append(err)
+
     status = cgroup_status()
     parent = status.get("resolved_parent")
     export_line = f"export KART_CGROUP_PARENT={parent}" if parent else ""
@@ -129,9 +245,5 @@ def setup_cgroup(*, start: bool = True) -> dict:
         "errors": errors,
         "status": status,
         "export_line": export_line,
-        "hint": (
-            "Add export_line to your shell profile so Kart uses cgroup caps."
-            if parent
-            else "kart.slice installed but parent not ready — is systemd --user running?"
-        ),
+        "hint": _worker_env_hint(parent) if parent else _failure_hint(status, errors),
     }

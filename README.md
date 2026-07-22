@@ -52,8 +52,19 @@ kartikeya setup-cgroup    # installs ~/.config/systemd/user/kart.slice
 kartikeya cgroup-status   # should print ready: /sys/fs/cgroup/...
 ```
 
-Add the printed `export KART_CGROUP_PARENT=...` line to your shell profile. Without
-a delegated parent, Kart falls back to task-scoped `prlimit`/`ulimit` inside the
+**systemd worker (operative):** a shell profile `export` does not reach a
+user-service kart worker. After `setup-cgroup` succeeds, wire the parent into the
+worker environment and restart:
+
+```
+systemctl --user set-environment KART_CGROUP_PARENT=/sys/fs/cgroup/.../kart.slice
+systemctl --user restart <your-kart-worker-unit>
+```
+
+(Or set `Environment=KART_CGROUP_PARENT=...` in a drop-in for the worker unit.)
+
+The `export` line printed by `setup-cgroup` is for **CLI / interactive** runs
+only. Without a delegated parent, Kart falls back to task-scoped `prlimit`/`ulimit` inside the
 sandbox (PID cap by default; virtual-memory cap only with `KART_RLIMIT_USE_AS=1`).
 `WILLOW_KART_NO_RLIMIT=1` disables caps entirely (escape hatch only).
 
