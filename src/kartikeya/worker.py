@@ -18,12 +18,14 @@ import argparse
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
+from .cgroup_setup import cgroup_status, setup_cgroup
 from .execute import (
     NetworkAuthorizer,
     TaskTypeHandler,
@@ -180,20 +182,65 @@ def _default_queue() -> TaskQueue:
     return SqliteTaskQueue(db)
 
 
+def _cmd_setup_cgroup(args: argparse.Namespace) -> int:
+    result = setup_cgroup(start=not args.no_start)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        if result.get("export_line"):
+            print(result["export_line"])
+        print(result.get("hint", ""))
+        for err in result.get("errors") or []:
+            print(f"error: {err}", file=sys.stderr)
+    return 0 if result.get("ok") else 1
+
+
+def _cmd_cgroup_status(args: argparse.Namespace) -> int:
+    status = cgroup_status()
+    if args.json:
+        print(json.dumps(status, indent=2))
+    else:
+        if status.get("ready"):
+            print(f"ready: {status['resolved_parent']}")
+        else:
+            print("not ready — run: kartikeya setup-cgroup")
+            if status.get("systemd_parent"):
+                print(f"  systemd path: {status['systemd_parent']} (invalid or busy)")
+    return 0 if status.get("ready") else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="kartikeya",
         description="Kartikeya — sandboxed task queue worker (a.k.a. Kart).",
     )
-    parser.add_argument("command", nargs="?", default="worker", choices=["worker"])
-    parser.add_argument("--lane", default=KART_LANE_FAST, choices=[KART_LANE_FAST, KART_LANE_BATCH])
-    parser.add_argument("--slots", type=int, default=None)
-    parser.add_argument("--interval", type=float, default=5.0)
-    parser.add_argument("--once", action="store_true", help="drain the queue and exit")
-    parser.add_argument("--db", default=None,
-                        help="SQLite queue path (default $KART_DB or $WILLOW_HOME/kart.db)")
-    parser.add_argument("-v", "--verbose", action="store_true")
+    sub = parser.add_subparsers(dest="command")
+    wp = sub.add_parser("worker", help="run the task queue worker (default)")
+    wp.add_argument("--lane", default=KART_LANE_FAST, choices=[KART_LANE_FAST, KART_LANE_BATCH])
+    wp.add_argument("--slots", type=int, default=None)
+    wp.add_argument("--interval", type=float, default=5.0)
+    wp.add_argument("--once", action="store_true", help="drain the queue and exit")
+    wp.add_argument("--db", default=None,
+                    help="SQLite queue path (default $KART_DB or $WILLOW_HOME/kart.db)")
+    wp.add_argument("-v", "--verbose", action="store_true")
+
+    cp = sub.add_parser(
+        "setup-cgroup",
+        help="provision kart.slice (Delegate=memory pids) for cgroup resource caps",
+    )
+    cp.add_argument("--no-start", action="store_true", help="install unit only, do not start")
+    cp.add_argument("--json", action="store_true", help="emit machine-readable result")
+
+    sp = sub.add_parser("cgroup-status", help="check delegated cgroup parent readiness")
+    sp.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
+    command = args.command or "worker"
+
+    if command == "setup-cgroup":
+        return _cmd_setup_cgroup(args)
+    if command == "cgroup-status":
+        return _cmd_cgroup_status(args)
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,

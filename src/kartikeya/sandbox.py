@@ -13,12 +13,15 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sysconfig
 import tempfile
 import time
 from pathlib import Path
+
+from . import cgroup_setup
 
 try:
     import resource as _resource  # POSIX only
@@ -817,10 +820,12 @@ def _rtk_rewrite(cmd: str, config: dict) -> str:
 #      counts real RSS and enforces a per-tree PID cap. cgroup v2's "no internal
 #      processes" rule means we cannot carve a child out of our own cgroup, so
 #      this needs an explicitly delegated, controller-enabled, empty parent.
-#   2. POSIX rlimits (RLIMIT_AS, RLIMIT_NPROC) — no root, no delegation, works in
-#      a rootless container. RLIMIT_AS caps *virtual* address space (blunter than
-#      cgroup RSS accounting), so the default is generous and env-tunable.
-# Off switch: WILLOW_KART_NO_RLIMIT=1.
+#   2. Task-scoped POSIX rlimits via prlimit/ulimit *inside* the sandbox command
+#      (post-namespace), not host preexec on bwrap. Default fallback applies
+#      RLIMIT_NPROC only; RLIMIT_AS is opt-in (KART_RLIMIT_USE_AS=1) because it
+#      caps virtual address space and breaks large-VA runtimes.
+# Greenfield: `kartikeya setup-cgroup` provisions kart.slice (Delegate=memory pids).
+# Off switch: WILLOW_KART_NO_RLIMIT=1 (explicit escape hatch, not the remedy).
 _MEM_MAX_DEFAULT = "2G"
 _PIDS_MAX_DEFAULT = 512
 
@@ -859,12 +864,41 @@ def _resource_limits() -> dict | None:
     return limits or None
 
 
+def rlimit_use_as() -> bool:
+    """Opt-in RLIMIT_AS for rlimit-only installs (breaks large-VA workloads)."""
+    return os.environ.get("KART_RLIMIT_USE_AS", "").strip().lower() in ("1", "true", "yes")
+
+
+def wrap_task_with_rlimits(cmd: str, limits: dict) -> str:
+    """Apply resource limits to the task inside the sandbox, not to bwrap setup."""
+    prlimit = shutil.which("prlimit")
+    if prlimit:
+        args = [prlimit]
+        if "pids" in limits:
+            args.append(f"--nproc={int(limits['pids'])}")
+        if "mem" in limits and rlimit_use_as():
+            args.append(f"--as={int(limits['mem'])}")
+        if len(args) == 1:
+            return cmd
+        args.extend(["bash", "-c", cmd])
+        return " ".join(shlex.quote(part) for part in args)
+
+    lines: list[str] = []
+    if "pids" in limits:
+        lines.append(f"ulimit -u {int(limits['pids'])}")
+    if "mem" in limits and rlimit_use_as():
+        kb = max(1, int(limits["mem"]) // 1024)
+        lines.append(f"ulimit -v {kb}")
+    if not lines:
+        return cmd
+    lines.append(cmd)
+    return "; ".join(lines)
+
+
 def _try_make_cgroup(limits: dict) -> str | None:
-    """Create a limited cgroup v2 leaf under KART_CGROUP_PARENT, or None. The
-    parent must be a delegated cgroup with memory+pids controllers enabled and no
-    internal processes; without one we fall back to rlimits."""
-    parent = os.environ.get("KART_CGROUP_PARENT", "").strip()
-    if not parent or not os.path.isdir(parent):
+    """Create a limited cgroup v2 leaf under a delegated parent, or None."""
+    parent = cgroup_setup.resolve_cgroup_parent()
+    if not parent:
         return None
     try:
         with open(os.path.join(parent, "cgroup.controllers")) as f:
@@ -885,8 +919,12 @@ def _try_make_cgroup(limits: dict) -> str | None:
 
 
 def _limits_context(limits: dict):
-    """Return (preexec_fn, cleanup_fn, mode). preexec runs in the child post-fork
-    and is best-effort — a limit that can't be applied must not fail the task."""
+    """Return (preexec_fn, cleanup_fn, mode).
+
+    cgroup: preexec joins the bwrap child to a leaf cgroup (host-side).
+    rlimit: no preexec — limits are applied inside the sandbox via
+    wrap_task_with_rlimits() so bwrap setup is not capped.
+    """
     leaf = _try_make_cgroup(limits)
     if leaf:
         def _preexec_cgroup() -> None:
@@ -904,22 +942,7 @@ def _limits_context(limits: dict):
 
         return _preexec_cgroup, _cleanup_cgroup, "cgroup"
 
-    if _resource is None:
-        return None, None, "none"
-
-    def _preexec_rlimit() -> None:
-        if "mem" in limits:
-            try:
-                _resource.setrlimit(_resource.RLIMIT_AS, (limits["mem"], limits["mem"]))
-            except (ValueError, OSError):
-                pass
-        if "pids" in limits:
-            try:
-                _resource.setrlimit(_resource.RLIMIT_NPROC, (limits["pids"], limits["pids"]))
-            except (ValueError, OSError):
-                pass
-
-    return _preexec_rlimit, None, "rlimit"
+    return None, None, "rlimit"
 
 
 def run_shell(
@@ -955,6 +978,14 @@ def run_shell(
     cmd = _rtk_rewrite(cmd, load_sandbox_config())
     rtk_rewritten = cmd != original_cmd
 
+    limits = _resource_limits()
+    preexec_fn = cleanup = None
+    resource_mode = "none"
+    if limits:
+        preexec_fn, cleanup, resource_mode = _limits_context(limits)
+        if resource_mode == "rlimit":
+            cmd = wrap_task_with_rlimits(cmd, limits)
+
     # Use bash -c so shell operators (&&, |, $(), redirects) work correctly.
     bash = _sandbox_bash()
     argv = [bash, "-c", cmd]
@@ -988,12 +1019,6 @@ def run_shell(
         except Exception:
             return None
         return "ok" if '"child-pid"' in txt else "failed"
-
-    limits = _resource_limits()
-    preexec_fn = cleanup = None
-    resource_mode = "none"
-    if limits:
-        preexec_fn, cleanup, resource_mode = _limits_context(limits)
 
     try:
         proc = subprocess.run(
