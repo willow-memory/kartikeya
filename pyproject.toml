@@ -1,10 +1,15 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "kartikeya"
-version = "0.0.7"
+# The git tag is the single source of truth for the version — see
+# [tool.hatch.version] below. A hardcoded version here is what broke the v0.0.8
+# release: the tag was cut on a commit still reading 0.0.7, so the build produced
+# kartikeya-0.0.7 and PyPI rejected it as a duplicate. A tag can no longer
+# disagree with the artifact it builds.
+dynamic = ["version"]
 description = "Kartikeya — a standalone bubblewrap-sandboxed task queue and worker. Backend-agnostic (SQLite or Postgres); the execution engine formerly known as Kart."
 readme = "README.md"
 license = { text = "MIT" }
@@ -39,6 +44,14 @@ kart = "kartikeya.worker:main"
 Homepage = "https://github.com/rudi193-cmd/kartikeya"
 Repository = "https://github.com/rudi193-cmd/kartikeya"
 Issues = "https://github.com/rudi193-cmd/kartikeya/issues"
+
+[tool.hatch.version]
+# Derived from the git tag (hatch-vcs). At an exact tag `vX.Y.Z` the version is
+# X.Y.Z; off-tag builds get a `.devN+g<sha>` suffix, which PyPI will not accept —
+# so an accidental publish from an untagged commit fails loudly instead of
+# shipping something mislabelled. CI must check out with `fetch-depth: 0`, or no
+# tags are present and the derived version is wrong.
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kartikeya"]
