@@ -23,7 +23,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
       - name: Install
-        run: pip install -e "." pytest
+        # pyyaml is for tests/test_release_wiring.py, which reads the release
+        # workflows. That file importorskips on it, so leaving it out would turn
+        # every release-chain check into a silent skip — the exact failure mode
+        # they exist to catch. There is no dev extra in this repo to put it in.
+        run: pip install -e "." pytest pyyaml
 
       - name: Run tests
         run: python -m pytest tests/ -q
