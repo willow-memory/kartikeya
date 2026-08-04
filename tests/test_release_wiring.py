@@ -105,6 +105,72 @@ def test_auto_merge_waits_for_ci_rather_than_merging_directly():
                 assert "--squash" not in line
 
 
+def test_the_changelog_is_rebuilt_before_auto_merge_is_armed():
+    """Order is the point: the correction must land on the release PR *before*
+    auto-merge can take it, or the release ships wrong and is fixed afterwards.
+
+    **Not yet exercised here.** This repo has no CHANGELOG.md and no
+    `chore(master): release` commit in its history, so release-please has never
+    cut a release and the tool no-ops. The wiring is asserted; the correction is
+    not, because there is nothing here to correct yet."""
+    steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
+    names = [s.get("name") or str(s.get("uses", "")) for s in steps]
+
+    def index_of(needle: str) -> int:
+        hits = [i for i, n in enumerate(names) if needle in n]
+        assert hits, f"no step matching {needle!r} in {names}"
+        return hits[0]
+
+    assert (index_of("actions/checkout") < index_of("release-please-action")
+            < index_of("Rebuild the changelog") < index_of("Arm auto-merge")), names
+
+    checkout = next(s for s in steps
+                    if str(s.get("uses", "")).startswith("actions/checkout"))
+    assert checkout["with"]["fetch-depth"] == 0, "needs full history for the range"
+    assert checkout["with"]["fetch-tags"] is True, "needs tags to find the previous release"
+
+
+def test_a_changelog_bail_does_not_block_the_release():
+    """The bug willow-mcp shipped, carried here as a guard rather than repeated.
+    Under `set -e`, exit 2 — the tool refusing a section it cannot model —
+    skipped the auto-merge arming and stopped the release entirely. Trading a
+    wrong changelog for no release at all is a bad deal."""
+    steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
+    step = next(s for s in steps if "Rebuild the changelog" in (s.get("name") or ""))
+    assert "::warning::" in step["run"], "a bail must warn"
+    assert 'status" = "2"' in step["run"], "exit 2 must be handled, not left to set -e"
+    assert "RELEASE_PLEASE_TOKEN" in str(step.get("env"))
+    assert "GITHUB_TOKEN" not in str(step.get("env"))
+    assert (_REPO / "tools" / "changelog_dedup.py").exists(), \
+        "the workflow calls a script this repo does not ship"
+
+
+def test_the_pr_title_check_guards_both_directions():
+    """One direction stops a title inventing a release; the other stops a commit
+    releasing something nobody installs. willow-mcp shipped 2.1.5 that way and
+    jeles published v0.4.1 for a single `ci:` commit.
+
+    The packaged path is the one thing in that workflow that must NOT be shared
+    between repos — willow-mcp uses `src/willow_mcp/`, jeles a top-level
+    `jeles/`. Read the *assigned value* out of the AST rather than searching the
+    text: the comments there name the other repos' paths deliberately, and a
+    substring check would flag its own explanation."""
+    import ast
+
+    wf = _REPO / ".github" / "workflows" / "pr-title.yml"
+    body = _yaml(wf)["jobs"]["title"]["steps"][-1]["run"].split("<<'PY'")[1].rsplit("PY", 1)[0]
+    tree = ast.parse(body)
+    packaged = next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                    if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], "id", "") == "PACKAGED")
+
+    assert packaged == ("src/kartikeya/", "pyproject.toml"), packaged
+    pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
+    wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    assert wheel == ["src/kartikeya"], \
+        f"packaged path disagrees with what the wheel ships: {wheel}"
+
+
 def test_only_types_that_change_the_installed_package_cut_a_release():
     """Every un-hidden type releases on its own. jeles shipped v0.4.1 to PyPI
     for a `ci:` commit touching a workflow file — survivable when a human merges

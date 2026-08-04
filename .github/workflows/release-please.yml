@@ -69,11 +69,81 @@ jobs:
           fi
           echo "RELEASE_PLEASE_TOKEN present"
 
+      # Needed by the changelog step below, which derives entries from
+      # `git log <previous tag>..<this release>` rather than trusting the
+      # generated text. `fetch-depth: 0` plus tags is load-bearing — a shallow
+      # clone cannot see either end of that range, and the tool would then
+      # silently compute a different set.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
       - uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Correct the section release-please just wrote, before auto-merge is
+      # armed below. This fleet merges with merge commits, so GitHub writes the
+      # PR title into the merge commit body and release-please counts one change
+      # twice — willow-mcp shipped 2.1.2, 2.1.3 and 2.1.4 that way, and 2.1.3
+      # lost a real commit to the merge commit that displaced it.
+      #
+      # NOTE, because it changes how far to trust this step: it has never run
+      # here. This repo has no CHANGELOG.md and no release-please release commit
+      # anywhere in its history, so the tool no-ops ("nothing to rebuild") until
+      # release-please actually cuts a release. Installed ahead of the problem,
+      # not in response to one.
+      - name: Rebuild the changelog section from the commits
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          branch=$(gh pr list --repo "$REPO" --state open --json number,headRefName \
+                     --jq '[.[] | select(.headRefName | startswith("release-please--"))]
+                           | first | .headRefName // empty')
+          if [ -z "$branch" ]; then
+            echo "No open release PR — nothing releasable, nothing to correct."
+            exit 0
+          fi
+
+          git fetch --tags origin "$branch"
+          git checkout "$branch"
+
+          # Exit 2 means the tool found something it does not model — a breaking
+          # change, an unreadable range. Warn and carry on rather than fail:
+          # failing here fails the job, so the auto-merge arming below never runs
+          # and the release simply does not ship. willow-mcp shipped that bug and
+          # its first real run broke the release job; the correction travels with
+          # the port rather than being rediscovered here.
+          set +e
+          python tools/changelog_dedup.py
+          status=$?
+          set -e
+          if [ "$status" = "2" ]; then
+            echo "::warning::changelog_dedup could not rebuild this section — "\
+                 "release-please's version is shipping as-is. Check it by hand."
+            exit 0
+          fi
+          [ "$status" = "0" ] || exit "$status"
+
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "release-please's section already matches the commits."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore: rebuild the changelog section from the commits
+
+          release-please parsed the merge commits alongside the commits they
+          merge, because this repo does not squash-merge. See
+          tools/changelog_dedup.py."
+          git push origin "$branch"
 
       - name: Arm auto-merge on the release PR
         env:
