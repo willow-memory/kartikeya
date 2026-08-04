@@ -218,6 +218,54 @@ def test_print_section_refuses_when_there_is_no_changelog():
     assert r.stdout.strip() == "", f"printed something usable as a body: {r.stdout!r}"
 
 
+def test_print_section_refuses_while_only_hand_written_history_exists():
+    """The live successor to the no-CHANGELOG guard, and the same hazard.
+
+    CHANGELOG.md now exists but contains only the hand-written v0.0.1-v0.0.9
+    history, backfilled because those tags predate release-please. Those
+    sections deliberately carry no `(…/compare/…)` link, which is how the tool
+    tells generated sections from written ones.
+
+    `--print-section`'s stdout becomes a GitHub Release body, so this must exit
+    non-zero with an empty stdout rather than printing an explanatory sentence
+    that would be published as release notes."""
+    import subprocess
+    import sys
+
+    changelog = _REPO / "CHANGELOG.md"
+    if not changelog.exists():
+        pytest.skip("no changelog — the earlier guard covers that state")
+    generated = [ln for ln in changelog.read_text().splitlines()
+                 if ln.startswith("## [")]
+    if generated:
+        pytest.skip("release-please has written a section — this guard is spent")
+
+    r = subprocess.run([sys.executable, str(_REPO / "tools" / "changelog_dedup.py"),
+                        "--print-section", "0.0.9"],
+                       capture_output=True, text=True, cwd=str(_REPO))
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert r.stdout.strip() == "", f"printed something publishable: {r.stdout!r}"
+
+
+def test_a_rebuild_leaves_the_hand_written_history_alone():
+    """The claim the changelog header makes about this tool, checked rather than
+    asserted: with no generated section present there is nothing to rebuild, and
+    that is a clean no-op — not an error, and not a rewrite of the history."""
+    import subprocess
+    import sys
+
+    changelog = _REPO / "CHANGELOG.md"
+    if not changelog.exists() or [ln for ln in changelog.read_text().splitlines()
+                                  if ln.startswith("## [")]:
+        pytest.skip("only meaningful while the file is hand-written history alone")
+
+    before = changelog.read_text()
+    r = subprocess.run([sys.executable, str(_REPO / "tools" / "changelog_dedup.py")],
+                       capture_output=True, text=True, cwd=str(_REPO))
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert changelog.read_text() == before, "the hand-written history was modified"
+
+
 def test_only_types_that_change_the_installed_package_cut_a_release():
     """Every un-hidden type releases on its own. jeles shipped v0.4.1 to PyPI
     for a `ci:` commit touching a workflow file — survivable when a human merges
