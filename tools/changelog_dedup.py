@@ -191,8 +191,13 @@ def rebuild(text: str) -> tuple[str, str]:
         raise Bail("no '## [version](...compare/...)' section found in the changelog")
 
     header = SECTION_RE.match(lines[start])
+    # Any `## ` heading ends the section — not just `## [`. This file mixes two
+    # shapes: release-please's `## [x.y.z](…/compare/…)` and the hand-written
+    # `## 0.0.9 — date` history below it. Stopping only at `## [` made a
+    # generated section swallow the entire hand-written history, and then bail on
+    # its `### Docs` heading.
     end = next((i for i in range(start + 1, len(lines))
-                if lines[i].startswith("## [")), len(lines))
+                if lines[i].startswith("## ")), len(lines))
 
     visible, order = sections_from_config()
     body = lines[start + 1:end]
@@ -246,8 +251,13 @@ def section_for(text: str, version: str) -> str | None:
             break
     if start is None:
         return None
+    # Any `## ` heading ends the section — not just `## [`. This file mixes two
+    # shapes: release-please's `## [x.y.z](…/compare/…)` and the hand-written
+    # `## 0.0.9 — date` history below it. Stopping only at `## [` made a
+    # generated section swallow the entire hand-written history, and then bail on
+    # its `### Docs` heading.
     end = next((i for i in range(start + 1, len(lines))
-                if lines[i].startswith("## [")), len(lines))
+                if lines[i].startswith("## ")), len(lines))
     return "\n".join(lines[start:end]).rstrip()
 
 
@@ -277,6 +287,26 @@ def main() -> int:
         return 0
 
     text = CHANGELOG.read_text()
+
+    # A changelog with no release-please-generated section at all. Here that is
+    # a real, temporary state rather than a malformed file: CHANGELOG.md was
+    # backfilled by hand for v0.0.1-v0.0.9, which were tagged before
+    # release-please existed, and those sections deliberately carry no
+    # `(…/compare/…)` link. That absence is exactly what distinguishes
+    # hand-written history from a generated section, so there is nothing here to
+    # rebuild until release-please writes its first one.
+    #
+    # `rebuild()` still raises for this — the tests rely on that, and in a repo
+    # whose changelog is fully generated it would mean a malformed file. Only the
+    # CLI treats it as a clean no-op.
+    if not any(SECTION_RE.match(ln) for ln in text.splitlines()):
+        if args.print_section:
+            print(f"::error::{CHANGELOG.name} has no generated section, so there "
+                  f"is none for {args.print_section!r} to publish", file=sys.stderr)
+            return 2
+        print(f"no release-please section in {CHANGELOG.name} yet — only the "
+              "hand-written history, which this does not touch")
+        return 0
 
     if args.print_section:
         section = section_for(text, args.print_section)
