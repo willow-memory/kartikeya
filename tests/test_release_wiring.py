@@ -278,16 +278,29 @@ def test_only_types_that_change_the_installed_package_cut_a_release():
         assert next(s for s in sections if s["type"] == t).get("hidden") is True
 
 
-def test_below_1_0_so_it_keeps_the_pre_major_flags():
-    """Inverted from willow-mcp, which must NOT have these (2.x needs to reach
-    3.0.0). Here they are right, and the visible consequence is that the next
-    `feat:` goes 0.0.9 -> 0.1.0 rather than 0.0.10."""
+def test_a_breaking_change_below_1_0_cuts_1_0_0_rather_than_a_minor():
+    """`bump-minor-pre-major` was true here and is now false — a policy change,
+    so this test flipped with it.
+
+    True kept a breaking change at a minor, so that reaching 1.0 stayed a
+    decision someone makes. Dependents paid for it: a `<1.0.0` cap accepted
+    every version this config could produce and therefore promised nothing.
+    willow-mcp tried `kartikeya>=0.0.9,<0.1.0` to close that downstream and
+    withdrew it — that cap would have expired on the very next `feat:`, which
+    this config already documents as taking 0.0.9 to 0.1.0.
+
+    The visible consequence: `feat:` still goes 0.0.9 -> 0.1.0, and a breaking
+    change goes straight to 1.0.0. That jump is the point — the number then says
+    what happened.
+    """
     cfg = _package_config()
-    assert cfg.get("bump-minor-pre-major") is True
+    assert cfg.get("bump-minor-pre-major") is False, (
+        "true caps a breaking change at a minor, which makes a downstream "
+        "`<1.0.0` cap meaningless. See willow-mcp docs/design/fleet-versioning.md")
     assert cfg.get("bump-patch-for-minor-pre-major") is False, \
-        "with this true, a fix would bump the minor instead of the patch"
+        "with this true, a feat would bump the patch instead of the minor"
     assert _json(_MANIFEST)["."].startswith("0."), \
-        "at 1.0 these flags stop being correct and should be removed"
+        "past 1.0 both flags are dead weight — `isPreMajor` gates them. Remove."
 
 
 def test_the_publish_step_is_honest_about_not_having_attestations():
