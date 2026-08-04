@@ -171,6 +171,53 @@ def test_the_pr_title_check_guards_both_directions():
         f"packaged path disagrees with what the wheel ships: {wheel}"
 
 
+def test_the_release_body_is_synced_after_the_release_is_created():
+    """release-please writes the GitHub Release body from its own parse, not
+    from CHANGELOG.md, so fixing the file leaves the release *page* wrong.
+    willow-mcp's v2.1.4 page and jeles' v0.5.0 page both kept their duplicate
+    after the file had been corrected.
+
+    Like the changelog step, this has never run here — there is no CHANGELOG.md
+    to publish from. The wiring is what is asserted."""
+    steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
+    names = [s.get("name") or str(s.get("uses", "")) for s in steps]
+
+    def index_of(needle: str) -> int:
+        hits = [i for i, n in enumerate(names) if needle in n]
+        assert hits, f"no step matching {needle!r} in {names}"
+        return hits[0]
+
+    assert (index_of("release-please-action") < index_of("Make the GitHub Release body")
+            < index_of("Arm auto-merge")), names
+
+    step = steps[index_of("Make the GitHub Release body")]
+    run = step["run"]
+    assert "--print-section" in run
+    assert "gh release edit" in run
+    assert "$GITHUB_SHA" in run, "must not depend on which branch the previous step left"
+    assert "rstrip()" in run, "comparison must ignore trailing whitespace"
+    assert "RELEASE_PLEASE_TOKEN" in str(step.get("env"))
+    assert "GITHUB_TOKEN" not in str(step.get("env"))
+
+
+def test_print_section_refuses_when_there_is_no_changelog():
+    """The ordering trap this repo uniquely has. `--print-section`'s stdout
+    becomes a GitHub Release body, so falling through the "no CHANGELOG.md yet —
+    nothing to rebuild" early return would publish that sentence as the release
+    notes. It must exit non-zero instead, and the workflow then warns and leaves
+    the release alone."""
+    import subprocess
+    import sys
+
+    tool = _REPO / "tools" / "changelog_dedup.py"
+    if (_REPO / "CHANGELOG.md").exists():
+        pytest.skip("a changelog exists now — this guards the no-changelog state")
+    r = subprocess.run([sys.executable, str(tool), "--print-section", "0.0.9"],
+                       capture_output=True, text=True, cwd=str(_REPO))
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert r.stdout.strip() == "", f"printed something usable as a body: {r.stdout!r}"
+
+
 def test_only_types_that_change_the_installed_package_cut_a_release():
     """Every un-hidden type releases on its own. jeles shipped v0.4.1 to PyPI
     for a `ci:` commit touching a workflow file — survivable when a human merges
