@@ -6,8 +6,14 @@ name: Release
 # (Settings -> Secrets and variables -> Actions). One-time setup: create the
 # token on PyPI and add that secret. Until it exists, the publish step fails.
 # (Trusted Publishing / OIDC is the tokenless alternative. This repo is the odd
-# one out now — willow-mcp moved to OIDC — so the two should be unified; until
-# that decision lands, the token pattern here is left as-is deliberately.)
+# one out of THREE now, not of two: willow-mcp and jeles both publish over OIDC
+# with `id-token: write` and a `pypi` environment, and neither stores a token.
+# So the "unify them" note below has stopped being a two-way preference and is
+# now just the outstanding migration — the only long-lived PyPI credential left
+# in the fleet is this one, and a secret that exists is a secret that can leak
+# or expire unnoticed. Left as-is deliberately until someone registers the
+# publisher; the change is a `permissions: id-token: write`, an `environment:
+# pypi`, and deleting the `password:` line.)
 
 on:
   push:
