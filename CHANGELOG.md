@@ -36,10 +36,9 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **lanes:** restore the fast lane's own timeout ceiling ([eea5768](https://github.com/rudi193-cmd/kartikeya/commit/eea57683d7143a384d5f19821410e04ac1ef73c7))
 * **queue:** drop the duplicate network_authorization on TaskRow ([e7a9ad1](https://github.com/rudi193-cmd/kartikeya/commit/e7a9ad1178ab615c9e2cac7319068e10e77c7583))
+* **lanes:** restore the fast lane's own timeout ceiling ([eea5768](https://github.com/rudi193-cmd/kartikeya/commit/eea57683d7143a384d5f19821410e04ac1ef73c7))
 * **queue:** reclaim tasks whose worker died mid-run ([79b81b9](https://github.com/rudi193-cmd/kartikeya/commit/79b81b90ad0a179bfeef44d2762f4a38d30f0ddc))
-* reclaim orphaned claims, restore the fast-lane ceiling, drop a duplicate field ([146eaa0](https://github.com/rudi193-cmd/kartikeya/commit/146eaa07639a6d9e7868a5a463febc1d9a0b67e9))
 
 ## 0.0.9 — 2026-08-02
 
