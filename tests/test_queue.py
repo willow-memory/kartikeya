@@ -122,6 +122,91 @@ def test_no_double_claim_under_concurrency(tmp_path):
     assert len(seen) == len(set(seen))
 
 
+# ── orphaned claims (a worker killed mid-task) ──────────────────────────────
+
+
+def _expire_claim(tmp_path, task_id: str, *, seconds: int = 7200) -> None:
+    """Backdate a claim: what a SIGKILLed worker leaves behind, minus the wait."""
+    with sqlite3.connect(tmp_path / "tasks.db") as conn:
+        conn.execute(
+            "UPDATE tasks SET claimed_at=datetime('now', ?) WHERE task_id=?",
+            (f"-{seconds} seconds", task_id),
+        )
+
+
+def test_expired_claim_is_visible_before_anything_reclaims_it(tmp_path):
+    """A stranded task must be *seeable* as stranded, not just quietly fixed."""
+    q = _queue(tmp_path)
+    q.submit("DEAD", "sleep 999")
+    q.claim_pending("kart", 1)
+    _expire_claim(tmp_path, "DEAD")
+
+    assert q.stale_running() == ["DEAD"]
+    # read-only: surfacing does not rewrite the row
+    assert q.get("DEAD")["status"] == "running"
+
+
+def test_live_claim_is_not_stale(tmp_path):
+    q = _queue(tmp_path)
+    q.submit("LIVE", "echo hi")
+    q.claim_pending("kart", 1)
+    assert q.stale_running() == []
+    assert q.reap_stale() == []
+    assert q.get("LIVE")["status"] == "running"
+
+
+def test_reap_stale_recovers_a_dead_workers_task_as_failed(tmp_path):
+    """Without this the row sits in 'running' forever: never retried, never
+    surfaced as failed. Reaping must move it to a terminal state that says why."""
+    q = _queue(tmp_path)
+    q.submit("DEAD", "sleep 999")
+    q.claim_pending("kart", 1)
+    _expire_claim(tmp_path, "DEAD")
+
+    assert q.reap_stale() == ["DEAD"]
+    row = q.get("DEAD")
+    assert row["status"] == "failed"
+    assert "orphaned_running_reaped" in row["result"]
+    assert row["completed_at"] is not None
+
+    stats = q.stats()
+    assert stats.running == 0
+    assert stats.failed == 1
+    # already terminal — a second sweep finds nothing
+    assert q.reap_stale() == []
+
+
+def test_reap_stale_honours_an_explicit_lease(tmp_path):
+    q = _queue(tmp_path)
+    q.submit("D", "sleep 999")
+    q.claim_pending("kart", 1)
+    _expire_claim(tmp_path, "D", seconds=120)
+    assert q.reap_stale(3600) == []      # inside a 1h lease
+    assert q.reap_stale(60) == ["D"]     # past a 60s lease
+
+
+def test_legacy_db_without_claimed_at_migrates_and_leases(tmp_path):
+    db = tmp_path / "tasks.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE tasks ("
+            "task_id TEXT PRIMARY KEY, task TEXT NOT NULL, "
+            "agent TEXT NOT NULL DEFAULT 'kart', submitted_by TEXT NOT NULL DEFAULT '', "
+            "status TEXT NOT NULL DEFAULT 'pending', result TEXT, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (task_id, task, status) VALUES (?, ?, 'running')",
+            ("STRANDED", "sleep 999"),
+        )
+    q = SqliteTaskQueue(db)
+    # a pre-existing 'running' row gets a lease starting at migration, not an
+    # invented past — so it is not reaped out from under a live worker
+    assert q.stale_running() == []
+    _expire_claim(tmp_path, "STRANDED")
+    assert q.reap_stale() == ["STRANDED"]
+
+
 def test_stats_counts_by_status(tmp_path):
     q = _queue(tmp_path)
     q.submit("A", "x")

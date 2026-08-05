@@ -103,6 +103,30 @@ def test_on_run_event_callbacks_fire(tmp_path):
     assert ("close", "E1", "completed") in events
 
 
+def test_worker_reaps_and_reports_a_dead_workers_orphaned_claim(tmp_path, caplog):
+    """A previous worker was killed mid-task; this one must recover the row and
+    say so, rather than leave it 'running' forever."""
+    import sqlite3
+
+    q = _queue(tmp_path)
+    q.submit("ORPHAN", "sleep 999")
+    q.claim_pending("kart", 1)
+    with sqlite3.connect(tmp_path / "kart.db") as conn:
+        conn.execute(
+            "UPDATE tasks SET claimed_at=datetime('now', '-7200 seconds') "
+            "WHERE task_id=?",
+            ("ORPHAN",),
+        )
+
+    with caplog.at_level("WARNING", logger="kartikeya.worker"):
+        run_worker(q, once=True, slots=1)
+
+    row = q.get("ORPHAN")
+    assert row["status"] == "failed"
+    assert "orphaned_running_reaped" in row["result"]
+    assert "ORPHAN" in caplog.text
+
+
 def _network_row(**overrides):
     values = {
         "task_id": "NET",

@@ -14,10 +14,13 @@ schema (see the willow-mcp integration in docs/DESIGN.md §3).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .lanes import reaper_stale_seconds
 
 
 @dataclass(frozen=True)
@@ -51,7 +54,20 @@ class QueueStats:
 
 class TaskQueue(ABC):
     """The host-supplied storage seam. Implementations MUST make `claim_pending`
-    atomic — two concurrent workers must never claim the same row."""
+    atomic — two concurrent workers must never claim the same row.
+
+    Two *optional* maintenance methods are duck-typed by the worker loop
+    (`worker._maybe_reap_and_prune`) and called once per poll when present:
+
+    - ``reap_stale()`` — recover claims whose worker died. A claim is a lease,
+      not a transfer: the only thing that moves a row out of 'running' is the
+      process that claimed it, so a killed worker strands its row there for
+      good. A backend that stamps claim time should fail such rows once the
+      lease expires and return their ids (the worker logs them at WARNING).
+    - ``prune_completed()`` — bound the size of the terminal-row history.
+
+    Backends without them are fine — the worker skips what is not implemented.
+    """
 
     @abstractmethod
     def claim_pending(self, agent: str, limit: int, lane: str | None = None) -> list[TaskRow]:
@@ -83,6 +99,10 @@ class SqliteTaskQueue(TaskQueue):
     transaction: the claim UPDATE and its read happen with the reserved write
     lock held, so no two connections can claim the same row. Suitable for a
     single-host worker (one or a few processes); not a distributed queue.
+
+    A claim is a *lease*: `claimed_at` is stamped when the row goes 'running',
+    and `reap_stale()` fails rows whose lease has expired — otherwise a worker
+    killed mid-task leaves its row 'running' with no process left to finish it.
     """
 
     _SCHEMA = """
@@ -95,10 +115,18 @@ class SqliteTaskQueue(TaskQueue):
         status       TEXT NOT NULL DEFAULT 'pending',
         result       TEXT,
         created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        claimed_at   TEXT,
         completed_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(status, agent);
     """
+
+    # Columns added after a released schema — an existing tasks table is
+    # migrated in place rather than rebuilt (or silently mis-read).
+    _ADDED_COLUMNS = {
+        "network_authorization": "TEXT NOT NULL DEFAULT ''",
+        "claimed_at": "TEXT",
+    }
 
     def __init__(self, db_path: str | Path):
         self._path = str(db_path)
@@ -107,10 +135,16 @@ class SqliteTaskQueue(TaskQueue):
             columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
             }
-            if "network_authorization" not in columns:
+            for name, decl in self._ADDED_COLUMNS.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")
+            if "claimed_at" not in columns:
+                # Rows already 'running' when the lease column arrives have no
+                # claim time to recover. Start their lease now rather than
+                # guessing: one full lease of grace, then the reaper sees them.
                 conn.execute(
-                    "ALTER TABLE tasks ADD COLUMN network_authorization "
-                    "TEXT NOT NULL DEFAULT ''"
+                    "UPDATE tasks SET claimed_at=datetime('now') "
+                    "WHERE status='running' AND claimed_at IS NULL"
                 )
 
     def _connect(self) -> sqlite3.Connection:
@@ -134,7 +168,9 @@ class SqliteTaskQueue(TaskQueue):
             ids = [r["task_id"] for r in rows]
             for tid in ids:
                 conn.execute(
-                    "UPDATE tasks SET status='running' WHERE task_id=?", (tid,)
+                    "UPDATE tasks SET status='running', claimed_at=datetime('now') "
+                    "WHERE task_id=?",
+                    (tid,),
                 )
             conn.execute("COMMIT")
         return [
@@ -151,9 +187,82 @@ class SqliteTaskQueue(TaskQueue):
     def mark_running(self, task_id: str) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE tasks SET status='running' WHERE task_id=? AND status!='running'",
+                "UPDATE tasks SET status='running', claimed_at=datetime('now') "
+                "WHERE task_id=? AND status!='running'",
                 (task_id,),
             )
+
+    # ── lease recovery ──────────────────────────────────────────────────────
+    #
+    # Nothing else moves a row out of 'running'. mark_done is called by the
+    # process that claimed the row, so if that process is killed — OOM, SIGKILL,
+    # a host reboot — the row stays 'running' forever: never retried, never
+    # surfaced as failed, and (in the fast lane) still counted against the
+    # worker's slots by any host that reads `running` as in-flight.
+
+    def stale_running(
+        self, max_age_seconds: int | None = None, *, agent: str = "kart"
+    ) -> list[str]:
+        """Task ids whose claim has outlived its lease — read-only.
+
+        Surfacing is deliberately separate from reclaiming: an operator (or a
+        health check) can see what is stranded before, or without, anything
+        rewriting it. Defaults to `KART_STALE_SECONDS` (see lanes.py), which
+        `lanes.reaper_alignment_warning()` keeps above every lane's own timeout
+        so a task normally dies by its timeout and only ever reaches here when
+        its worker did not survive to record that.
+        """
+        age = reaper_stale_seconds() if max_age_seconds is None else int(max_age_seconds)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT task_id FROM tasks "
+                "WHERE agent=? AND status='running' AND claimed_at IS NOT NULL "
+                "AND claimed_at < datetime('now', ?) "
+                "ORDER BY claimed_at",
+                (agent, f"-{max(0, age)} seconds"),
+            ).fetchall()
+        return [r["task_id"] for r in rows]
+
+    def reap_stale(
+        self, max_age_seconds: int | None = None, *, agent: str = "kart"
+    ) -> list[str]:
+        """Fail expired claims and return the ids actually reaped.
+
+        Reaped rows become 'failed' carrying an `orphaned_running_reaped`
+        result — the same marker willow-2.0's Postgres reaper used — rather
+        than being deleted or quietly returned to 'pending'. The row says what
+        happened to it, and the loss shows up in `stats().failed` instead of
+        sitting invisibly in `running`. The worker loop calls this each poll
+        and logs whatever comes back (see `worker._maybe_reap_and_prune`), so
+        one is also swept at worker startup.
+        """
+        age = reaper_stale_seconds() if max_age_seconds is None else int(max_age_seconds)
+        candidates = self.stale_running(age, agent=agent)
+        if not candidates:
+            return []
+        payload = json.dumps(
+            {
+                "error": "orphaned_running_reaped",
+                "previous_status": "running",
+                "max_age_seconds": age,
+            }
+        )
+        reaped: list[str] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for tid in candidates:
+                cur = conn.execute(
+                    "UPDATE tasks SET status='failed', result=?, "
+                    "completed_at=datetime('now') "
+                    "WHERE task_id=? AND status='running'",
+                    (payload, tid),
+                )
+                # A task that finished between the scan and this UPDATE is no
+                # longer 'running' and is not reported as reaped.
+                if cur.rowcount:
+                    reaped.append(tid)
+            conn.execute("COMMIT")
+        return reaped
 
     def mark_done(self, task_id: str, *, status: str, result: str) -> None:
         if status not in ("completed", "failed"):

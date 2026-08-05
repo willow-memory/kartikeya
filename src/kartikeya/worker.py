@@ -84,14 +84,28 @@ def _process_row(
 
 
 def _maybe_reap_and_prune(queue: TaskQueue) -> None:
-    """Optional backend maintenance — only if the backend implements it."""
+    """Optional backend maintenance — only if the backend implements it.
+
+    Runs on every poll, so the first pass is also the startup sweep: a worker
+    that was killed mid-task leaves rows 'running' with nothing left to finish
+    them, and the next worker to start recovers them. Whatever `reap_stale`
+    returns is logged — a reclaim is never silent.
+    """
     for name in ("reap_stale", "prune_completed"):
         fn = getattr(queue, name, None)
-        if callable(fn):
-            try:
-                fn()
-            except Exception as e:
-                logger.warning("%s failed: %s", name, e)
+        if not callable(fn):
+            continue
+        try:
+            outcome = fn()
+        except Exception as e:
+            logger.warning("%s failed: %s", name, e)
+            continue
+        if name == "reap_stale" and outcome:
+            logger.warning(
+                "kart reaped stale running task(s) — claim outlived its lease, "
+                "worker presumed dead: %s",
+                outcome,
+            )
 
 
 def run_worker(
