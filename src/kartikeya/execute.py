@@ -33,9 +33,27 @@ TaskTypeHandler = Callable[..., "tuple[str, dict]"]
 NetworkAuthorizer = Callable[[TaskRow, str], bool]
 
 
-def kart_timeout(context: str = "poll") -> int:
+def kart_timeout(context: str = "poll", lane: str | None = None) -> int:
+    """Resolve the subprocess ceiling for a task.
+
+    ``poll`` (a synchronous one-shot drain) is short and lane-independent
+    (120s). In ``daemon`` context the ceiling is LANE-AWARE: the fast lane gets
+    its own short ceiling (``lanes.fast_timeout_seconds()``, 300s) so a hung
+    fast task frees its slot quickly, while batch/unknown keeps the 1800s
+    daemon ceiling. ``lane`` defaults to None so callers that do not pass it
+    keep the previous daemon behaviour.
+    """
     if context == "daemon":
-        return int(os.environ.get("KART_DAEMON_TIMEOUT", "1800"))
+        from .lanes import (
+            KART_LANE_FAST,
+            daemon_timeout_seconds,
+            fast_timeout_seconds,
+            normalize_lane,
+        )
+
+        if lane is not None and normalize_lane(lane) == KART_LANE_FAST:
+            return fast_timeout_seconds()
+        return daemon_timeout_seconds()
     return int(os.environ.get("KART_POLL_TIMEOUT", "120"))
 
 
