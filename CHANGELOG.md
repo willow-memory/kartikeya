@@ -31,6 +31,15 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.0.10](https://github.com/rudi193-cmd/kartikeya/compare/v0.0.9...v0.0.10) (2026-08-05)
+
+
+### Fixed
+
+* **queue:** drop the duplicate network_authorization on TaskRow ([e7a9ad1](https://github.com/rudi193-cmd/kartikeya/commit/e7a9ad1178ab615c9e2cac7319068e10e77c7583))
+* **lanes:** restore the fast lane's own timeout ceiling ([eea5768](https://github.com/rudi193-cmd/kartikeya/commit/eea57683d7143a384d5f19821410e04ac1ef73c7))
+* **queue:** reclaim tasks whose worker died mid-run ([79b81b9](https://github.com/rudi193-cmd/kartikeya/commit/79b81b90ad0a179bfeef44d2762f4a38d30f0ddc))
+
 ## 0.0.9 — 2026-08-02
 
 ### Build
