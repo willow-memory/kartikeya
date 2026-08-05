@@ -53,16 +53,21 @@ def _process_row(
     row: TaskRow,
     *,
     context: str,
+    lane: str | None = None,
     handlers: dict[str, TaskTypeHandler] | None,
     network_authorizer: NetworkAuthorizer | None,
     on_run_event: RunEventFn,
 ) -> tuple[str, dict]:
-    """Execute one claimed row and record terminal state via the queue."""
+    """Execute one claimed row and record terminal state via the queue.
+
+    `lane` picks the subprocess ceiling: the fast lane is capped shorter than
+    batch so a hung task cannot sit on one of its few slots (see kart_timeout).
+    """
     on_run_event("open", row)
     try:
         status, result = execute_task_row(
             row,
-            timeout=kart_timeout(context),
+            timeout=kart_timeout(context, lane=lane),
             context=context,
             handlers=handlers,
             network_authorizer=network_authorizer,
@@ -84,14 +89,28 @@ def _process_row(
 
 
 def _maybe_reap_and_prune(queue: TaskQueue) -> None:
-    """Optional backend maintenance — only if the backend implements it."""
+    """Optional backend maintenance — only if the backend implements it.
+
+    Runs on every poll, so the first pass is also the startup sweep: a worker
+    that was killed mid-task leaves rows 'running' with nothing left to finish
+    them, and the next worker to start recovers them. Whatever `reap_stale`
+    returns is logged — a reclaim is never silent.
+    """
     for name in ("reap_stale", "prune_completed"):
         fn = getattr(queue, name, None)
-        if callable(fn):
-            try:
-                fn()
-            except Exception as e:
-                logger.warning("%s failed: %s", name, e)
+        if not callable(fn):
+            continue
+        try:
+            outcome = fn()
+        except Exception as e:
+            logger.warning("%s failed: %s", name, e)
+            continue
+        if name == "reap_stale" and outcome:
+            logger.warning(
+                "kart reaped stale running task(s) — claim outlived its lease, "
+                "worker presumed dead: %s",
+                outcome,
+            )
 
 
 def run_worker(
@@ -109,9 +128,11 @@ def run_worker(
 ) -> None:
     """Drain `queue` until stopped (or, with once=True, until it is empty).
 
-    lane: 'fast' runs up to `slots` tasks concurrently; 'batch' runs one at a
-    time. `once=True` claims and processes everything currently pending, waits
-    for in-flight work, and returns — for tests and cron-style one-shot drains.
+    lane: 'fast' runs up to `slots` tasks concurrently and caps each task at
+    `KART_FAST_TIMEOUT` (300s); 'batch' runs one at a time under the longer
+    `KART_DAEMON_TIMEOUT` (1800s). `once=True` claims and processes everything
+    currently pending, waits for in-flight work, and returns — for tests and
+    cron-style one-shot drains (which use the short 'poll' ceiling instead).
 
     `network_authorizer` is an optional host-supplied gate consulted just before
     a network-requesting task's sandbox launches (see execute_task_row). Left
@@ -133,6 +154,7 @@ def run_worker(
                 queue,
                 row,
                 context=context,
+                lane=lane,
                 handlers=handlers,
                 network_authorizer=network_authorizer,
                 on_run_event=on_run_event,

@@ -4,6 +4,8 @@ These pin the two things the worker loop relies on: a claim moves a row out of
 'pending' exactly once (no double-claim under concurrency), and terminal state
 is recorded correctly.
 """
+import ast
+import dataclasses
 import sqlite3
 import sys
 import threading
@@ -12,10 +14,36 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kartikeya import QueueStats, SqliteTaskQueue, TaskRow  # noqa: E402
+from kartikeya import queue as kqueue  # noqa: E402
 
 
 def _queue(tmp_path) -> SqliteTaskQueue:
     return SqliteTaskQueue(tmp_path / "tasks.db")
+
+
+def test_no_dataclass_field_is_declared_twice():
+    """A field declared twice is invisible at runtime — `dataclasses.fields()`
+    and `__annotations__` both dedupe — so only the source shows it. It stays
+    harmless exactly as long as the two declarations agree: the LAST one's type
+    and default silently win, while the first (the one carrying the docs, and
+    the one a reader stops at) is what everybody believes is in effect. Only an
+    AST check can see it, which is why this test parses the file."""
+    tree = ast.parse(Path(kqueue.__file__).read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        declared = [
+            n.target.id for n in node.body
+            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+        ]
+        duplicates = {n for n in declared if declared.count(n) > 1}
+        assert not duplicates, f"{node.name} declares {sorted(duplicates)} more than once"
+
+
+def test_task_row_field_order_is_what_positional_construction_assumes():
+    assert [f.name for f in dataclasses.fields(TaskRow)] == [
+        "task_id", "task", "agent", "submitted_by", "network_authorization", "status",
+    ]
 
 
 def test_submit_then_claim_returns_task(tmp_path):
@@ -120,6 +148,91 @@ def test_no_double_claim_under_concurrency(tmp_path):
     # every task claimed exactly once
     assert sorted(seen) == sorted(f"T{i:03d}" for i in range(n))
     assert len(seen) == len(set(seen))
+
+
+# ── orphaned claims (a worker killed mid-task) ──────────────────────────────
+
+
+def _expire_claim(tmp_path, task_id: str, *, seconds: int = 7200) -> None:
+    """Backdate a claim: what a SIGKILLed worker leaves behind, minus the wait."""
+    with sqlite3.connect(tmp_path / "tasks.db") as conn:
+        conn.execute(
+            "UPDATE tasks SET claimed_at=datetime('now', ?) WHERE task_id=?",
+            (f"-{seconds} seconds", task_id),
+        )
+
+
+def test_expired_claim_is_visible_before_anything_reclaims_it(tmp_path):
+    """A stranded task must be *seeable* as stranded, not just quietly fixed."""
+    q = _queue(tmp_path)
+    q.submit("DEAD", "sleep 999")
+    q.claim_pending("kart", 1)
+    _expire_claim(tmp_path, "DEAD")
+
+    assert q.stale_running() == ["DEAD"]
+    # read-only: surfacing does not rewrite the row
+    assert q.get("DEAD")["status"] == "running"
+
+
+def test_live_claim_is_not_stale(tmp_path):
+    q = _queue(tmp_path)
+    q.submit("LIVE", "echo hi")
+    q.claim_pending("kart", 1)
+    assert q.stale_running() == []
+    assert q.reap_stale() == []
+    assert q.get("LIVE")["status"] == "running"
+
+
+def test_reap_stale_recovers_a_dead_workers_task_as_failed(tmp_path):
+    """Without this the row sits in 'running' forever: never retried, never
+    surfaced as failed. Reaping must move it to a terminal state that says why."""
+    q = _queue(tmp_path)
+    q.submit("DEAD", "sleep 999")
+    q.claim_pending("kart", 1)
+    _expire_claim(tmp_path, "DEAD")
+
+    assert q.reap_stale() == ["DEAD"]
+    row = q.get("DEAD")
+    assert row["status"] == "failed"
+    assert "orphaned_running_reaped" in row["result"]
+    assert row["completed_at"] is not None
+
+    stats = q.stats()
+    assert stats.running == 0
+    assert stats.failed == 1
+    # already terminal — a second sweep finds nothing
+    assert q.reap_stale() == []
+
+
+def test_reap_stale_honours_an_explicit_lease(tmp_path):
+    q = _queue(tmp_path)
+    q.submit("D", "sleep 999")
+    q.claim_pending("kart", 1)
+    _expire_claim(tmp_path, "D", seconds=120)
+    assert q.reap_stale(3600) == []      # inside a 1h lease
+    assert q.reap_stale(60) == ["D"]     # past a 60s lease
+
+
+def test_legacy_db_without_claimed_at_migrates_and_leases(tmp_path):
+    db = tmp_path / "tasks.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE tasks ("
+            "task_id TEXT PRIMARY KEY, task TEXT NOT NULL, "
+            "agent TEXT NOT NULL DEFAULT 'kart', submitted_by TEXT NOT NULL DEFAULT '', "
+            "status TEXT NOT NULL DEFAULT 'pending', result TEXT, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (task_id, task, status) VALUES (?, ?, 'running')",
+            ("STRANDED", "sleep 999"),
+        )
+    q = SqliteTaskQueue(db)
+    # a pre-existing 'running' row gets a lease starting at migration, not an
+    # invented past — so it is not reaped out from under a live worker
+    assert q.stale_running() == []
+    _expire_claim(tmp_path, "STRANDED")
+    assert q.reap_stale() == ["STRANDED"]
 
 
 def test_stats_counts_by_status(tmp_path):

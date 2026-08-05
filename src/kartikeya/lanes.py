@@ -52,18 +52,34 @@ def daemon_timeout_seconds() -> int:
     return int(os.environ.get("KART_DAEMON_TIMEOUT", "1800"))
 
 
+def fast_timeout_seconds() -> int:
+    """Fast-lane subprocess ceiling. The fast lane is interactive and has only a
+    few slots (``fast_worker_slots()``), so it gets a SHORT ceiling of its own
+    (default 300s) rather than inheriting the 1800s daemon timeout — one hung
+    task must not hold a third of the lane's capacity for half an hour. Batch
+    keeps ``daemon_timeout_seconds()`` (1800s)."""
+    return int(os.environ.get("KART_FAST_TIMEOUT", "300"))
+
+
 _REAPER_BUFFER_SECONDS = 300
 
 
 def reaper_alignment_warning() -> str | None:
-    """Stale reaper should not fire before the daemon timeout + buffer."""
+    """The stale reaper is defence-in-depth, not the primary kill: every lane's
+    task should die by its own timeout, never by the reaper. So the reaper must
+    sit above the LARGEST per-lane timeout + buffer — covering both the
+    batch/daemon ceiling and the fast ceiling, which flags e.g. a misconfigured
+    fast timeout set at or above the reaper."""
     stale = reaper_stale_seconds()
     daemon = daemon_timeout_seconds()
-    need = daemon + _REAPER_BUFFER_SECONDS
+    fast = fast_timeout_seconds()
+    largest = max(daemon, fast)
+    need = largest + _REAPER_BUFFER_SECONDS
     if stale < need:
+        which = "KART_DAEMON_TIMEOUT" if daemon >= fast else "KART_FAST_TIMEOUT"
         return (
-            f"KART_STALE_SECONDS ({stale}) < KART_DAEMON_TIMEOUT ({daemon})"
-            f" + {_REAPER_BUFFER_SECONDS}s buffer — reaper may mark tasks stale"
-            " before the daemon kills them"
+            f"KART_STALE_SECONDS ({stale}) < largest lane timeout"
+            f" ({which}={largest}) + {_REAPER_BUFFER_SECONDS}s buffer —"
+            " reaper may mark tasks stale before their own timeout kills them"
         )
     return None
