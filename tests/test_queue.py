@@ -4,6 +4,8 @@ These pin the two things the worker loop relies on: a claim moves a row out of
 'pending' exactly once (no double-claim under concurrency), and terminal state
 is recorded correctly.
 """
+import ast
+import dataclasses
 import sqlite3
 import sys
 import threading
@@ -12,10 +14,36 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kartikeya import QueueStats, SqliteTaskQueue, TaskRow  # noqa: E402
+from kartikeya import queue as kqueue  # noqa: E402
 
 
 def _queue(tmp_path) -> SqliteTaskQueue:
     return SqliteTaskQueue(tmp_path / "tasks.db")
+
+
+def test_no_dataclass_field_is_declared_twice():
+    """A field declared twice is invisible at runtime — `dataclasses.fields()`
+    and `__annotations__` both dedupe — so only the source shows it. It stays
+    harmless exactly as long as the two declarations agree: the LAST one's type
+    and default silently win, while the first (the one carrying the docs, and
+    the one a reader stops at) is what everybody believes is in effect. Only an
+    AST check can see it, which is why this test parses the file."""
+    tree = ast.parse(Path(kqueue.__file__).read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        declared = [
+            n.target.id for n in node.body
+            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+        ]
+        duplicates = {n for n in declared if declared.count(n) > 1}
+        assert not duplicates, f"{node.name} declares {sorted(duplicates)} more than once"
+
+
+def test_task_row_field_order_is_what_positional_construction_assumes():
+    assert [f.name for f in dataclasses.fields(TaskRow)] == [
+        "task_id", "task", "agent", "submitted_by", "network_authorization", "status",
+    ]
 
 
 def test_submit_then_claim_returns_task(tmp_path):

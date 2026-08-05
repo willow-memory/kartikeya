@@ -36,7 +36,6 @@ class TaskRow:
     # that doesn't leaves it "".
     network_authorization: str = ""
     status: str = "running"
-    network_authorization: str = ""
 
 
 @dataclass(frozen=True)
