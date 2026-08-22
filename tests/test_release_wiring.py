@@ -13,9 +13,8 @@ refusing a duplicate upload.
 Ported from willow-mcp, where a config mistake would have tagged
 `willow-mcp-v2.2.0` while the publish workflow listened for `v*`. Three checks
 there do not apply here and are deliberately absent rather than copied:
-kartikeya has no second version file to keep in step, no aggregate CI job to
-name, and no OIDC publisher — it publishes with an API token, which is the one
-place this repo still diverges from the rest of the fleet.
+kartikeya has no second version file to keep in step and no aggregate CI job to
+name.
 """
 from __future__ import annotations
 
@@ -303,20 +302,22 @@ def test_a_breaking_change_below_1_0_cuts_1_0_0_rather_than_a_minor():
         "past 1.0 both flags are dead weight — `isPreMajor` gates them. Remove."
 
 
-def test_the_publish_step_is_honest_about_not_having_attestations():
-    """This repo publishes with an API token, so PEP 740 attestations are not
-    available and the workflow says `attestations: false`. If it ever moves to
-    OIDC that line must go, or provenance is silently switched off on a setup
-    that could have had it. This is the one place the fleet still diverges."""
-    publish = _yaml(_RELEASE_WF)["jobs"]["publish"]["steps"]
+def test_the_publish_job_uses_oidc_with_attestations():
+    """Trusted Publishing (OIDC) with PEP 740 attestations enabled. No stored
+    token, and attestations default to true — an explicit `false` or a leftover
+    `password:` means the migration is incomplete."""
+    job = _yaml(_RELEASE_WF)["jobs"]["publish"]
+    perms = job.get("permissions") or {}
+    assert perms.get("id-token") == "write", (
+        "the publish job must request id-token: write for Trusted Publishing")
+    publish = job["steps"]
     step = next(s for s in publish if "pypi-publish" in str(s.get("uses", "")))
     with_ = step.get("with") or {}
-    token_auth = "password" in with_
-    assert token_auth == (with_.get("attestations") is False), (
-        "token auth and `attestations: false` go together; OIDC and attestations "
-        "go together. Found password=%r attestations=%r"
-        % ("password" in with_, with_.get("attestations"))
-    )
+    assert "password" not in with_, (
+        "a stored token is not needed with Trusted Publishing — drop the "
+        "password line")
+    assert with_.get("attestations") is not False, (
+        "attestations are available with OIDC — do not disable them")
 
 
 def test_the_checkout_uses_the_pat_so_its_pushes_are_not_gated():

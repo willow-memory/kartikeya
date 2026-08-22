@@ -74,7 +74,7 @@ jobs:
       # generated text. `fetch-depth: 0` plus tags is load-bearing — a shallow
       # clone cannot see either end of that range, and the tool would then
       # silently compute a different set.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
