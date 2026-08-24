@@ -12,14 +12,14 @@ name = "kartikeya"
 dynamic = ["version"]
 description = "Kartikeya — a standalone bubblewrap-sandboxed task queue and worker. Backend-agnostic (SQLite or Postgres); the execution engine formerly known as Kart."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Sean Campbell" }]
 requires-python = ">=3.11"
 keywords = ["task-queue", "sandbox", "bubblewrap", "bwrap", "worker", "kart", "willow"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
