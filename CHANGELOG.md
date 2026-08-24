@@ -36,7 +36,6 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Build
 
-* **deps:** bump googleapis/release-please-action from 4 to 5 ([91c9f39](https://github.com/willow-memory/kartikeya/commit/91c9f3979e3e4e0dc8e62eae2e6ebc095b495c56))
 * **deps:** bump googleapis/release-please-action from 4 to 5 ([6dde1b6](https://github.com/willow-memory/kartikeya/commit/6dde1b6991246328e23f77cd6dcd5e104873eb26))
 
 ## [0.0.10](https://github.com/rudi193-cmd/kartikeya/compare/v0.0.9...v0.0.10) (2026-08-05)
