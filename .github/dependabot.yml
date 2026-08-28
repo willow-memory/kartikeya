@@ -5,7 +5,18 @@ updates:
     schedule:
       interval: "weekly"
 
+  # Action versions are NOT packaged. Dependabot's default prefix is
+  # `build(deps):`, and `build` is release-cutting in release-please-config.json
+  # — so a workflow-only bump arrives claiming a release that contains nothing
+  # installable, and `pr-title.yml`'s second guard fails it. That guard is right;
+  # the prefix was wrong. `ci` is hidden, so these ride along with the next real
+  # release instead of cutting an empty one of their own.
+  #
+  # Same fix willow-mcp already carries (found there on #293, actions/checkout
+  # 4 -> 7, red on `title` with every other check green).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "ci"
