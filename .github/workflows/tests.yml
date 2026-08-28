@@ -7,9 +7,12 @@ on:
     branches: ["master", "main"]
 
 jobs:
-  test:
+  test-matrix:
     runs-on: ubuntu-latest
     strategy:
+      # One broken leg must not hide the others: the whole point of a version
+      # matrix is seeing which versions fail, not just that one did.
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
@@ -31,3 +34,13 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  # Aggregate gate: branch protection requires a single check named exactly
+  # "test" across the whole fleet, so the ruleset never has to name a matrix
+  # cell. Pinning a cell name means the required check silently stops
+  # reporting the moment the matrix is re-shaped. Green only when every leg is.
+  test:
+    needs: [test-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "all matrix legs green"
