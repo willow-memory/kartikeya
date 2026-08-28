@@ -41,6 +41,24 @@ jobs:
   # reporting the moment the matrix is re-shaped. Green only when every leg is.
   test:
     needs: [test-matrix]
+    # `if: always()` is load-bearing, not boilerplate. Without it a failing
+    # dependency does not fail this job — it SKIPS it, because that is what
+    # `needs:` means. GitHub does not treat a skipped required check as a
+    # blocker, so the one check branch protection trusts goes quiet at exactly
+    # the moment it matters, and the pull request becomes mergeable with a red
+    # suite underneath it. Observed directly on willows-grove#5: `test-suite`
+    # failed, `test` reported `skipping`, and the PR read MERGEABLE.
+    #
+    # So the result is asserted explicitly rather than inferred from this job
+    # having run at all. Same shape as homestead/ci.yml and willow-mcp.
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Assert every matrix leg actually succeeded
+        # skipped and cancelled count as failures: a leg that did not run has
+        # told us nothing, and this gate speaks for all of them.
+        if: ${{ needs.test-matrix.result != 'success' }}
+        run: |
+          echo "::error::test-matrix did not succeed (result: ${{ needs.test-matrix.result }})"
+          exit 1
       - run: echo "all matrix legs green"
