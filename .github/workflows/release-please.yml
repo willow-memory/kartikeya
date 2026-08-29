@@ -50,24 +50,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Require the release PAT
-        # Without this, a missing secret degrades to GITHUB_TOKEN and still
-        # opens a healthy-looking release PR whose tag starts no workflow — so
-        # everything reads as fine right up until nothing reaches PyPI.
-        env:
-          TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-        run: |
-          if [ -z "${TOKEN}" ]; then
-            echo "::error::RELEASE_PLEASE_TOKEN is not set on this repository."
-            cat <<'MSG'
-          Add a fine-grained PAT scoped to this repo with:
-            Contents: read/write
-            Pull requests: read/write
-          as the repository secret RELEASE_PLEASE_TOKEN.
-          MSG
-            exit 1
-          fi
-          echo "RELEASE_PLEASE_TOKEN present"
+      # Mints a short-lived installation token for the willow-ci GitHub App
+      # (org variable WILLOW_CI_APP_ID + org secret WILLOW_CI_PRIVATE_KEY).
+      #
+      # Why an App and not GITHUB_TOKEN: GitHub suppresses workflow runs for
+      # events generated with GITHUB_TOKEN, so a tag cut with it starts no
+      # release workflow and nothing reaches PyPI — everything reads as fine.
+      # An App installation token is not GITHUB_TOKEN, so the tag it pushes
+      # triggers workflows normally, exactly as the PAT did.
+      #
+      # Why an App and not the PAT it replaces: this token expires in an hour
+      # and is minted per run. RELEASE_PLEASE_TOKEN was a PAT on a timer, and
+      # its sibling ENGINE_PROPAGATION_TOKEN expired on 2026-08-04 and stopped
+      # eleven repos receiving engine changes for three and a half weeks with
+      # no signal.
+      #
+      # The old "is the secret set?" guard is gone because this step IS the
+      # guard: if the App is not installed or the key is wrong, it fails here
+      # and loudly, rather than degrading to GITHUB_TOKEN.
+      - name: Mint a willow-ci installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.WILLOW_CI_APP_ID }}
+          private-key: ${{ secrets.WILLOW_CI_PRIVATE_KEY }}
 
       # Needed by the changelog step below, which derives entries from
       # `git log <previous tag>..<this release>` rather than trusting the
@@ -89,11 +95,11 @@ jobs:
           # report. Observed on the 2.2.0 release PR, which needed CI started by
           # hand. release-please's own commit on the same branch was not gated,
           # because it pushes with this token.
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: googleapis/release-please-action@v5
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -110,7 +116,7 @@ jobs:
       # not in response to one.
       - name: Rebuild the changelog section from the commits
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -176,7 +182,7 @@ jobs:
       # of what it merges). This step and the one above are the fix.
       - name: Make the GitHub Release body match the changelog
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -227,7 +233,7 @@ jobs:
 
       - name: Arm auto-merge on the release PR
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail

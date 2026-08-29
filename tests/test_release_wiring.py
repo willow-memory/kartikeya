@@ -78,17 +78,42 @@ def test_the_version_has_exactly_one_source():
         "nothing in this repo stores a version, so nothing needs bumping"
 
 
-def test_release_automation_uses_the_pat_everywhere():
+# A credential whose events actually trigger workflows. Either form is
+# acceptable; what is NOT acceptable is GITHUB_TOKEN, whose events GitHub
+# suppresses — the release PR merges, no tag workflow fires, nothing publishes.
+#
+# Originally this pinned the literal RELEASE_PLEASE_TOKEN, which named the
+# mechanism rather than the property. The willow-ci GitHub App satisfies the
+# same property (an installation token is not GITHUB_TOKEN) and adds hourly
+# expiry, so the assertion now accepts either and the prohibition below is
+# unchanged. Widening this to accept GITHUB_TOKEN would give back the three
+# releases jeles lost.
+NON_SUPPRESSED_CREDENTIALS = (
+    "RELEASE_PLEASE_TOKEN",              # fine-grained PAT (being retired)
+    "steps.app-token.outputs.token",     # willow-ci App installation token
+)
+
+
+def _names_a_non_suppressed_credential(value: object) -> bool:
+    text = str(value)
+    return any(c in text for c in NON_SUPPRESSED_CREDENTIALS)
+
+
+def test_release_automation_uses_a_non_suppressed_credential_everywhere():
     """A bot token silently produces no workflow runs: the release PR merges, no
     tag workflow fires, nothing publishes. jeles lost three releases to it."""
     steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
     used: set[str] = set()
+    values: list[str] = []
     for step in steps:
         for value in list((step.get("env") or {}).values()) + \
                      list((step.get("with") or {}).values()):
+            values.append(str(value))
             used.update(re.findall(r"secrets\.([A-Z_]+)", str(value)))
-    assert "RELEASE_PLEASE_TOKEN" in used, used
-    assert "GITHUB_TOKEN" not in used, f"must use the PAT; found {used}"
+    assert any(_names_a_non_suppressed_credential(v) for v in values), \
+        f"no non-suppressed credential anywhere in the job; secrets seen: {used}"
+    assert "GITHUB_TOKEN" not in used, \
+        f"GITHUB_TOKEN's events do not trigger workflows; found {used}"
 
 
 def test_auto_merge_waits_for_ci_rather_than_merging_directly():
@@ -138,7 +163,7 @@ def test_a_changelog_bail_does_not_block_the_release():
     step = next(s for s in steps if "Rebuild the changelog" in (s.get("name") or ""))
     assert "::warning::" in step["run"], "a bail must warn"
     assert 'status" = "2"' in step["run"], "exit 2 must be handled, not left to set -e"
-    assert "RELEASE_PLEASE_TOKEN" in str(step.get("env"))
+    assert _names_a_non_suppressed_credential(step.get("env"))
     assert "GITHUB_TOKEN" not in str(step.get("env"))
     assert (_REPO / "tools" / "changelog_dedup.py").exists(), \
         "the workflow calls a script this repo does not ship"
@@ -195,7 +220,7 @@ def test_the_release_body_is_synced_after_the_release_is_created():
     assert "gh release edit" in run
     assert "$GITHUB_SHA" in run, "must not depend on which branch the previous step left"
     assert "rstrip()" in run, "comparison must ignore trailing whitespace"
-    assert "RELEASE_PLEASE_TOKEN" in str(step.get("env"))
+    assert _names_a_non_suppressed_credential(step.get("env"))
     assert "GITHUB_TOKEN" not in str(step.get("env"))
 
 
@@ -320,7 +345,7 @@ def test_the_publish_job_uses_oidc_with_attestations():
         "attestations are available with OIDC — do not disable them")
 
 
-def test_the_checkout_uses_the_pat_so_its_pushes_are_not_gated():
+def test_the_checkout_uses_a_non_suppressed_credential_so_pushes_are_not_gated():
     """`actions/checkout` persists whatever credential it used, and the changelog
     step's `git push` then uses it. `env: GH_TOKEN` only reaches the `gh` CLI.
 
@@ -337,7 +362,8 @@ def test_the_checkout_uses_the_pat_so_its_pushes_are_not_gated():
     checkout = next(s for s in steps
                     if str(s.get("uses", "")).startswith("actions/checkout"))
     token = str((checkout.get("with") or {}).get("token", ""))
-    assert "RELEASE_PLEASE_TOKEN" in token, (
-        "checkout must use the PAT — its credential is what the changelog "
-        f"step pushes with. Got: {token!r}")
+    assert _names_a_non_suppressed_credential(token), (
+        "checkout must carry a credential whose events trigger workflows — its "
+        "credential is what the changelog step pushes with. "
+        f"Got: {token!r}")
     assert "GITHUB_TOKEN" not in token
