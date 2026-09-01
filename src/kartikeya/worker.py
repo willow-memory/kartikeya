@@ -1,7 +1,7 @@
 """
 worker.py — Kartikeya task-queue consumer.
 
-Lifted from willow-2.0 core/kart_worker.py, decoupled: the Postgres bridge is
+Lifted from legacy fleet monolith core/kart_worker.py, decoupled: the Postgres bridge is
 replaced by the `TaskQueue` seam, fleet telemetry (SOIL heartbeat, run-ledger)
 becomes optional callbacks, and the Grove governance gate / hot-reload are
 dropped. Two lanes:
@@ -39,7 +39,7 @@ from .queue import SqliteTaskQueue, TaskQueue, TaskRow
 
 logger = logging.getLogger("kartikeya.worker")
 
-# Optional telemetry seams (replace willow-2.0's loop_heartbeat / run_ledger).
+# Optional telemetry seams (replace legacy fleet monolith's loop_heartbeat / run_ledger).
 HeartbeatFn = Callable[..., None]           # on_heartbeat(lane=..., tick_ok=...)
 RunEventFn = Callable[..., None]            # on_run_event(event, row, status=None)
 

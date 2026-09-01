@@ -94,8 +94,8 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Changed
 
-* Prefer willow-mcp over willow-2.0 when resolving mount policy.
-* `KART_EXTRA_VENVS` injects fleet venv paths, unblocking willow-2.0 delegation.
+* Prefer willow-mcp over legacy fleet monolith when resolving mount policy.
+* `KART_EXTRA_VENVS` injects fleet venv paths, unblocking legacy fleet monolith delegation.
 
 ## 0.0.3 — 2026-07-18
 

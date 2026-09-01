@@ -8,13 +8,13 @@ direction is set in `kart-productionization.md`. Resolves B-22.
 
 **Decisions locked (operator, 2026-07-08):**
 1. **Shared package** — Kart becomes its own installable package; willow-mcp
-   (and later willow-2.0) *depend* on it rather than vendoring a copy. No drift.
+   (and later legacy monolith) *depend* on it rather than vendoring a copy. No drift.
 2. **Product-neutral default** sandbox mount policy.
 3. **SQLite task backend** — the queue must run with **no Postgres**; a
    zero-infra `pip install` can execute tasks.
 
 The big consequence: **the `kart` package must not import willow-mcp or
-willow-2.0.** Its coupling to a host (DB access, `$WILLOW_HOME`) is inverted
+legacy monolith.** Its coupling to a host (DB access, `$WILLOW_HOME`) is inverted
 into a small **backend interface** the host implements. Kart owns the sandbox,
 worker loop, lanes, and scan; the host owns "where tasks live" and "where files
 live."
@@ -22,7 +22,7 @@ live."
 ## 0. Goal & acceptance
 
 A clean `pip install willow-mcp` (which pulls in `kart`) can execute a submitted
-task end-to-end with **no Postgres and no willow-2.0 present**:
+task end-to-end with **no Postgres and no legacy monolith present**:
 ```
 pip install willow-mcp          # depends on kart
 willow-mcp worker &             # drains the queue via the SQLite backend
@@ -30,7 +30,7 @@ willow-mcp worker &             # drains the queue via the SQLite backend
 ```
 plus the same for an `allow_net=True` task with `task_net` granted (sandbox +
 gate work standalone), and the `kart` suite green with neither willow-mcp nor
-willow-2.0 on `sys.path`.
+legacy monolith on `sys.path`.
 
 ## 1. The `kartikeya` package
 
@@ -38,7 +38,7 @@ New **standalone repo** (operator decision). Distribution + import name
 **`kartikeya`** — bringing back Kart's full name (Skanda / Murugan, the
 six-faced commander of the divine armies; `docs/audits/KART_SANDBOX_AUDIT_2026-06-11.md`).
 "Kart" stays the colloquial short form in prose and existing `kart:*` task ids.
-~2,200 LOC lifted from willow-2.0 `core/kart_*`; own `pyproject`; depends only
+~2,200 LOC lifted from legacy monolith `core/kart_*`; own `pyproject`; depends only
 on stdlib + optional extras.
 
 ```
@@ -62,7 +62,7 @@ backend and calls into the library (§3).
 
 ### 1a. Dependency dispositions
 
-| willow-2.0 dependency | Disposition in `kart` |
+| legacy monolith dependency | Disposition in `kart` |
 |---|---|
 | `kart_sandbox/execute/worker/lanes/task_scan` | **Lifted in** as the package core |
 | `core.pg_bridge.PgBridge` | **Inverted** → `TaskQueue` interface (§2); host supplies impl |
@@ -102,7 +102,7 @@ Three implementations:
 - **willow-mcp's Postgres impl** (in willow-mcp) — maps through willow-mcp's
   schema-adaptation (`_TASK_FIELDS`), so it works against an *adopted* `tasks`
   table, using `FOR UPDATE SKIP LOCKED` for the claim.
-- **willow-2.0's impl** (later) — wraps its existing `PgBridge`.
+- **legacy monolith's impl** (later) — wraps its existing `PgBridge`.
 
 This is also exactly what makes the **SQLite backend** (decision 3) fall out
 naturally rather than being bolted on.
@@ -155,7 +155,7 @@ Gate bwrap tests on `bwrap_available()` so CI without bwrap skips, not fails.
 
 `kart[llm]` extra. Base worker runs shell tasks with zero LLM deps; an LLM task
 submitted without the extra fails cleanly (`{"error": "llm task type requires
-kart[llm]"}`), never an import crash. (willow-2.0 supplies its own `llm_edge`
+kart[llm]"}`), never an import crash. (legacy monolith supplies its own `llm_edge`
 adapter behind the extra's hook.)
 
 ## 8. Staged PRs / milestones
@@ -174,7 +174,7 @@ Spans two (maybe three) repos; sequence willow-mcp value first.
    `pyproject`.
 4. **Liveness:** worker heartbeat via the `on_heartbeat` seam surfaced in
    `fleet_health`/`diagnostic_summary` (review §1).
-5. **willow-2.0 migration (separate, later):** point willow-2.0 at the `kart`
+5. **legacy monolith migration (separate, later):** point legacy monolith at the `kart`
    package, delete its `core/kart_*`. Ends drift. Can trail well behind stage 3.
 6. **Optional:** `kart[llm]`, systemd templates, batch-lane polish.
 
@@ -186,8 +186,8 @@ Spans two (maybe three) repos; sequence willow-mcp value first.
 - Shared package · product-neutral default · SQLite backend (top of doc).
 
 **Working assumptions (operator may override):**
-- **willow-2.0 migration is deferred to stage 5** — accepting a temporary
-  window where willow-2.0 keeps its `core/kart_*` copy while willow-mcp depends
+- **legacy monolith migration is deferred to stage 5** — accepting a temporary
+  window where legacy monolith keeps its `core/kart_*` copy while willow-mcp depends
   on `kartikeya`. Rationale: ship willow-mcp value (close B-22) before touching
   the live fleet.
 - **`kartikeya` publish stays under the operator gate**, same as willow-mcp

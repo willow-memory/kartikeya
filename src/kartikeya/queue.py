@@ -1,7 +1,7 @@
 """Task-queue backend interface — the one seam that inverts host coupling.
 
 Kartikeya's worker loop is written against `TaskQueue`, not against any specific
-database or fleet. A host (willow-mcp, willow-2.0, or a standalone user) provides
+database or fleet. A host (willow-mcp, legacy fleet monolith, or a standalone user) provides
 a concrete backend; Kartikeya owns everything downstream of "give me the next
 task" / "record how it finished".
 
@@ -228,7 +228,7 @@ class SqliteTaskQueue(TaskQueue):
         """Fail expired claims and return the ids actually reaped.
 
         Reaped rows become 'failed' carrying an `orphaned_running_reaped`
-        result — the same marker willow-2.0's Postgres reaper used — rather
+        result — the same marker legacy fleet monolith's Postgres reaper used — rather
         than being deleted or quietly returned to 'pending'. The row says what
         happened to it, and the loss shows up in `stats().failed` instead of
         sitting invisibly in `running`. The worker loop calls this each poll

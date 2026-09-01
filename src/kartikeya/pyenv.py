@@ -1,7 +1,7 @@
 """Python interpreter / venv resolution for the sandbox PATH.
 
-Standalone reimplementation of willow-2.0's `willow.fylgja.python_env`, decoupled
-from the fleet home module and with the hardcoded `~/github/willow-2.0/.venv-dev`
+Standalone reimplementation of legacy fleet monolith's `willow.fylgja.python_env`, decoupled
+from the fleet home module and with the hardcoded legacy monolith ``~/github/willow-2.0/.venv-dev``
 path dropped. The sandbox uses this to bind the venv holding psycopg2 etc. and to
 pick the interpreter for tasks. Falls back to the running interpreter.
 """
@@ -34,7 +34,7 @@ def venv_candidates(root: Path | None = None) -> list[Path]:
     """Return candidate venv directories in preference order.
 
     Fleet-specific venv locations this generic package cannot know (e.g.
-    willow-2.0's ``~/github/willow-2.0/.venv-dev``) can be injected via the
+    legacy monolith's ``~/github/willow-2.0/.venv-dev``) can be injected via the
     ``KART_EXTRA_VENVS`` env var (``os.pathsep``-separated paths). They are
     inserted at high preference so a caller sharing an environment with the fleet
     resolves and binds the same venv the fleet's own resolver would — keeping the

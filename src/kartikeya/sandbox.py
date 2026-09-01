@@ -73,7 +73,7 @@ def _is_fleet_repo(base: Path) -> bool:
 
 
 def _is_willow_mcp_repo(base: Path) -> bool:
-    """True when ``base`` looks like a willow-mcp checkout (not willow-2.0 fleet)."""
+    """True when ``base`` looks like a willow-mcp checkout (not a legacy monolith fleet tree)."""
     if (base / "src" / "willow_mcp").is_dir():
         return True
     pkg = base / "willow_mcp"
@@ -118,7 +118,7 @@ def willow_repo_root() -> Path | None:
       1. ``$WILLOW_MCP_REPO`` (explicit willow-mcp checkout)
       2. Installed ``willow_mcp`` package tree (``pip install willow-mcp`` / editable)
       3. ``~/github/willow-mcp`` when present
-      4. Legacy fleet checkout ``~/github/willow-2.0``
+      4. Legacy monolith archive checkout ``~/github/willow-2.0`` (historical directory name)
 
     When ``$WILLOW_ROOT`` *is* set, only that path is considered — no fleet fallback.
     """

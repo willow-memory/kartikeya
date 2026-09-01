@@ -10,7 +10,7 @@ a [bubblewrap](https://github.com/containers/bubblewrap) sandbox with an explici
 mount/credential/network policy.
 
 Kartikeya is the execution engine extracted from the Willow fleet
-(`willow-2.0/core/kart_*`) and made to stand on its own — no fleet, no specific
+(`willow-2.0/core/kart_*` — historical path) and made to stand on its own — no fleet, no specific
 host, no required database server.
 
 ## Status
@@ -21,7 +21,7 @@ PyPI as `kartikeya` (0.0.9) — `pip install kartikeya`, or `pip install
 willow-mcp`, which floors it at `>=0.0.9,<1.0.0`. The cap is a real
 compatibility range rather than decoration: `bump-minor-pre-major` is **false**
 here, so a breaking change cuts 1.0.0 instead of hiding in a minor. The staged lift in `docs/DESIGN.md` is done
-through stage 4; stage 5 (willow-2.0 deleting its `core/kart_*` copy) is
+through stage 4; stage 5 (legacy fleet monolith deleting its `core/kart_*` copy) is
 tracked in willow-mcp#111.
 
 ## Design goals
