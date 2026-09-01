@@ -1,11 +1,11 @@
 """
 execute.py — single-task execution for Kartikeya.
 
-Lifted from willow-2.0 core/kart_execute.py, decoupled:
+Lifted from legacy fleet monolith core/kart_execute.py, decoupled:
 - The shell task path (the common case) is carried intact; its only deps are
   `.sandbox` and `.task_scan`.
 - The workflow-phase and goal/routine task *types* (which coupled a Postgres
-  bridge, an LLM edge, and an outcome runner in willow-2.0) are NOT in the base
+  bridge, an LLM edge, and an outcome runner in legacy fleet monolith) are NOT in the base
   package. `execute_task_row` routes them to an optional host-supplied handler;
   with no handler they fail cleanly (never an import crash). See docs/DESIGN.md
   §7 — the LLM/workflow surface is a later optional extra.

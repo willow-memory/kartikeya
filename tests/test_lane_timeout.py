@@ -5,7 +5,7 @@ serves interactive work. If a fast task inherits the batch/daemon ceiling, one
 hung command holds a third of the lane for 30 minutes and everything queued
 behind it waits. So `fast` is capped at `KART_FAST_TIMEOUT` (300s) while
 batch keeps `KART_DAEMON_TIMEOUT` (1800s) — the arrangement carried over from
-willow-2.0 (`core/kart_lanes.fast_timeout_seconds`, `core/kart_execute.kart_timeout`).
+legacy monolith (`core/kart_lanes.fast_timeout_seconds`, `core/kart_execute.kart_timeout`).
 """
 import sys
 from pathlib import Path

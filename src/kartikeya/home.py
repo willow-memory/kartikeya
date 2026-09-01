@@ -1,12 +1,12 @@
 """Home/root resolution — the filesystem seam.
 
-Standalone replacement for willow-2.0's `willow.fylgja.willow_home`. Kartikeya
+Standalone replacement for legacy fleet monolith's `willow.fylgja.willow_home`. Kartikeya
 only needs "where does the fleet/app keep its state" for a few sandbox concerns
 (the nsswitch shim, an optional `env` file, the `.kart-logs` dir). A host may
 point this anywhere via $WILLOW_HOME; otherwise it defaults to ~/.willow.
 
 Signatures accept an optional `package_root` for drop-in compatibility with the
-call sites lifted from willow-2.0; it is ignored here.
+call sites lifted from legacy fleet monolith; it is ignored here.
 """
 from __future__ import annotations
 
