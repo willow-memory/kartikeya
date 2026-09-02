@@ -43,16 +43,16 @@
     "/etc",
     "/sys",
     "{{HOME}}/github",
+    "{{WILLOW_ROOT}}",
     "{{HOME}}/.config/git",
     "{{HOME}}/.config/systemd"
   ],
   "bind_read_write": [
-    "{{WILLOW_ROOT}}",
+    "{{WILLOW_ROOT}}/worktrees",
     "{{HOME}}/.willow",
     "{{HOME}}/.local"
   ],
   "bind_try": [
-    "{{WILLOW_ROOT}}/.venv-dev",
     "{{HOME}}/.willow-venv",
     "{{HOME}}/.gitconfig",
     "{{HOME}}/.npmrc",
@@ -79,11 +79,13 @@
     "enabled": false
   },
   "_security_notes": {
-    "github_ro": "~/github is read-only by default; WILLOW_ROOT + its worktrees nest read-write on top. Hosts promote additional repos to RW via an override config.",
+    "github_ro": "~/github is read-only, and WILLOW_ROOT is read-only WITH it. Only the work root ({{WILLOW_ROOT}}/worktrees) and discovered worktrees nest read-write on top. Hosts promote additional repos to RW via an override config.",
     "ssh_dropped": "~/.ssh is not bound. SSH git uses SSH_AUTH_SOCK (via /run/user) + known_hosts (ro), both only on allow_net. Private keys never enter the sandbox.",
     "creds_gated": "credential_env_prefixes (and ~/.config/gh, ~/.netrc) are present only on allow_net. A no-network task gets zero credentials.",
     "db_gated": "db_env_prefixes and /var/run/postgresql socket bind are present only on allow_db. Default tasks cannot reach the local Postgres lane.",
     "localhost_tier": "# allow_localhost shares the host network namespace (loopback works) but still strips credentials. Weaker than --unshare-net; prefer over allow_net for local-only work.",
-    "tmp_tmpfs": "/tmp + /dev/shm are private tmpfs, not host binds."
+    "tmp_tmpfs": "/tmp + /dev/shm are private tmpfs, not host binds.",
+    "work_root_is_not_the_product": "WILLOW_ROOT resolves to the product's source on a developer box and to the installed package tree on a pip install. Bound read-write it let a sandboxed task edit the code that decides what tasks may do \u2014 measured 2026-09-02 on a live box: gate.py (the manifest ACL), pyproject.toml (the kartikeya floor that ships these very overlays), .git and .gitignore were all WRITABLE while mcp_apps/ and consent.json were correctly read-only. The policy files were protected and the code that reads them was not. Tasks now get a work root of their own: WILLOW_ROOT is ro, {{WILLOW_ROOT}}/worktrees is rw, and a task that needs to change source does it in a worktree.",
+    "venv_ro": "Venvs are bound read-only. .venv-dev is deliberately NOT in bind_try: a writable venv lets a task rewrite the .pth that resolves the product package, which is work_root_is_not_the_product through a different door."
   }
 }
