@@ -31,6 +31,13 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.0.12](https://github.com/willow-memory/kartikeya/compare/v0.0.11...v0.0.12) (2026-09-02)
+
+
+### Fixed
+
+* **sandbox:** bind WILLOW_ROOT read-only and give tasks a work root ([e377351](https://github.com/willow-memory/kartikeya/commit/e37735193b9da763fb095909a6d8de1e70ce8e00))
+
 ## [0.0.11](https://github.com/willow-memory/kartikeya/compare/v0.0.10...v0.0.11) (2026-08-24)
 
 
