@@ -340,3 +340,80 @@ def test_rlimit_as_opt_in_contains_memory_hog(monkeypatch):
     ok = sandbox.run_shell("echo under_the_cap", timeout=30)
     assert ok["returncode"] == 0 and "under_the_cap" in ok["stdout"]
     assert ok.get("resource_limit") == "rlimit"
+
+
+# ── the work root: WILLOW_ROOT is the product, not the workbench ─────────────
+
+def _mcp_repo(tmp_path: Path) -> Path:
+    """A minimal tree that _looks_like_willow_mcp()."""
+    repo = tmp_path / "willow-mcp"
+    (repo / "src" / "willow_mcp").mkdir(parents=True)
+    (repo / "src" / "willow_mcp" / "gate.py").write_text("# the manifest ACL\n")
+    (repo / "pyproject.toml").write_text("[project]\nname='willow-mcp'\n")
+    return repo
+
+
+def test_vendored_default_binds_willow_root_read_only(monkeypatch):
+    # The product's own source is not the workbench. Bound rw it let a sandboxed
+    # task edit the code deciding what tasks may do — measured on a live box
+    # 2026-09-02: gate.py, pyproject.toml, .git and .gitignore all writable while
+    # mcp_apps/ and consent.json were correctly read-only.
+    # Isolate from a host $WILLOW_HOME, whose override would otherwise be the
+    # thing under test instead of the shipped default.
+    monkeypatch.delenv("WILLOW_HOME", raising=False)
+    monkeypatch.delenv("KART_SANDBOX_CONFIG", raising=False)
+    cfg = sandbox.load_sandbox_config()
+    assert "{{WILLOW_ROOT}}" in cfg["bind_read_only"]
+    assert "{{WILLOW_ROOT}}" not in cfg["bind_read_write"]
+    assert "{{WILLOW_ROOT}}/worktrees" in cfg["bind_read_write"]
+    # A writable venv is the same hole through a different door.
+    assert "{{WILLOW_ROOT}}/.venv-dev" not in cfg.get("bind_try", [])
+
+
+def test_ensure_work_root_creates_the_writable_lane(tmp_path):
+    # _add drops a bind whose host path is missing, and the lane cannot be
+    # created from inside a read-only root — so it must exist beforehand.
+    repo = _mcp_repo(tmp_path)
+    assert not (repo / "worktrees").exists()
+    assert sandbox.ensure_work_root(repo) == repo / "worktrees"
+    assert (repo / "worktrees").is_dir()
+    # idempotent
+    assert sandbox.ensure_work_root(repo) == repo / "worktrees"
+
+
+def test_work_root_is_read_write_inside_a_read_only_root(tmp_path, monkeypatch):
+    repo = _mcp_repo(tmp_path)
+    monkeypatch.setenv("WILLOW_ROOT", str(repo))
+    mounts = {str(h): ro for h, _c, ro in sandbox.collect_bind_mounts(repo)}
+    assert mounts[str(repo)] is True, "WILLOW_ROOT must be read-only"
+    assert mounts[str(repo / "worktrees")] is False, "the work root must be writable"
+
+
+def test_parent_is_emitted_before_its_writable_child(tmp_path, monkeypatch):
+    # bwrap applies binds in order, so the rw work root only nests correctly if
+    # the ro root is emitted first. collect_bind_mounts sorts by path, and a
+    # parent path is a prefix of its child — this pins that it stays true.
+    repo = _mcp_repo(tmp_path)
+    monkeypatch.setenv("WILLOW_ROOT", str(repo))
+    order = [str(h) for h, _c, _ro in sandbox.collect_bind_mounts(repo)]
+    assert order.index(str(repo)) < order.index(str(repo / "worktrees"))
+
+
+def test_read_write_promotion_of_a_read_only_path_is_logged(tmp_path, monkeypatch, caplog):
+    # RW wins a collision regardless of order, so a per-repo rw entry for
+    # WILLOW_ROOT silently undoes the read-only work root while the config still
+    # reads correct. Two such entries were live on a real box. Never silent.
+    repo = _mcp_repo(tmp_path)
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(
+        '{"bind_read_only": ["{{WILLOW_ROOT}}"],'
+        ' "bind_try": ["{{WILLOW_ROOT}}"],'
+        ' "bind_read_write": [], "env_prefixes": ["WILLOW_"]}'
+    )
+    monkeypatch.setenv("KART_SANDBOX_CONFIG", str(cfg))
+    monkeypatch.setenv("WILLOW_ROOT", str(repo))
+    with caplog.at_level("WARNING"):
+        mounts = {str(h): ro for h, _c, ro in sandbox.collect_bind_mounts(repo)}
+    assert mounts[str(repo)] is False, "rw still wins — behaviour unchanged"
+    assert any("promoted to read-write" in r.getMessage() for r in caplog.records), \
+        "the promotion must be reported"

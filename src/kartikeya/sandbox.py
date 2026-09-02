@@ -143,6 +143,37 @@ def willow_repo_root() -> Path | None:
     return None
 
 
+def work_root(root: Path | None = None) -> Path | None:
+    """The writable lane for sandboxed tasks: ``$WILLOW_ROOT/worktrees``.
+
+    WILLOW_ROOT is the *product* — the product's source on a developer box, the
+    installed package tree on a pip install. It is bound read-only, so a task
+    that needs to change source does it in a worktree under here rather than in
+    the checkout itself.
+    """
+    repo = root or willow_repo_root()
+    return None if repo is None else repo / "worktrees"
+
+
+def ensure_work_root(root: Path | None = None) -> Path | None:
+    """Create the work root if absent, so its read-write bind is not skipped.
+
+    ``_add`` silently drops a bind whose host path does not exist, and a missing
+    read-write lane inside a read-only WILLOW_ROOT cannot be created from inside
+    the sandbox — the task would have nowhere to work and the failure would look
+    like a permissions bug rather than a missing directory. Best-effort: a
+    read-only or absent repo simply yields None and the bind stays unlisted.
+    """
+    wr = work_root(root)
+    if wr is None:
+        return None
+    try:
+        wr.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return wr
+
+
 def _template_ctx(root: Path | None) -> dict[str, str]:
     home = str(Path.home())
     repo = str(root or willow_repo_root() or Path.cwd())
@@ -266,6 +297,10 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
     repo = root or willow_repo_root()
     cfg = load_sandbox_config(repo)
     ctx = _template_ctx(repo)
+    # Must happen before the bind loops: the work root is the one read-write
+    # path inside a read-only WILLOW_ROOT, and a bind target that does not exist
+    # is dropped rather than created.
+    ensure_work_root(repo)
 
     mounts: dict[str, tuple[Path, Path, bool]] = {}
 
@@ -284,6 +319,18 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
         ro = read_only
         if key in mounts:
             existing = mounts[key]
+            # Read-write wins a collision regardless of listing order. That is
+            # load-bearing for promotions a host means (a repo listed rw on top
+            # of a ro parent), and a trap when it is not: a per-repo rw entry
+            # for WILLOW_ROOT silently undoes the read-only work root, and the
+            # config still reads correct. Never silent — say which path flipped.
+            if existing[2] and not ro:
+                _log.warning(
+                    "kart-sandbox: %s was listed read-only and is being promoted to "
+                    "read-write by a later entry. If this is WILLOW_ROOT or a trust "
+                    "path, remove the read-write entry: the read-only one does not "
+                    "win.", key,
+                )
             mounts[key] = (existing[0], existing[1], existing[2] and ro)
         else:
             mounts[key] = (resolved, resolved, ro)
