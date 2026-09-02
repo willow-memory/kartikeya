@@ -36,7 +36,6 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **sandbox:** bind WILLOW_ROOT read-only and give tasks a work root ([fc28771](https://github.com/willow-memory/kartikeya/commit/fc28771a04c5d8e663052631d8a1a03befad9651))
 * **sandbox:** bind WILLOW_ROOT read-only and give tasks a work root ([e377351](https://github.com/willow-memory/kartikeya/commit/e37735193b9da763fb095909a6d8de1e70ce8e00))
 
 ## [0.0.11](https://github.com/willow-memory/kartikeya/compare/v0.0.10...v0.0.11) (2026-08-24)
