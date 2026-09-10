@@ -37,7 +37,6 @@ rather than cutting one of their own — see `release-please-config.json`.
 ### Fixed
 
 * **sandbox:** code-level credential default matches the shipped policy ([0cdf152](https://github.com/willow-memory/kartikeya/commit/0cdf152584fb77ce49d46c23f9550c172fa3706d))
-* **sandbox:** no GitHub or SSH credential enters the sandbox; installed tree never writable ([e932ad5](https://github.com/willow-memory/kartikeya/commit/e932ad5dea42db65b0706e3f2cbcbfc6c07749c9))
 * **sandbox:** no GitHub or SSH credential enters the sandbox; installed tree never writable ([ca8ba37](https://github.com/willow-memory/kartikeya/commit/ca8ba3768d2df4534ec27c371d912974922e5565))
 
 ## [0.2.2](https://github.com/willow-memory/kartikeya/compare/v0.2.1...v0.2.2) (2026-09-10)
