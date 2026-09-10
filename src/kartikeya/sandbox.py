@@ -58,6 +58,17 @@ _NO_CONFIG_SOURCE = "<none>"
 #: exists to catch.
 _DEFAULT_DB_ENV_PREFIXES = ("PG", "POSTGRES")
 
+#: Exact variable names never handed to a task, even when their prefix is in
+#: `env_prefixes`. The allow list is by prefix, so a variable that names a
+#: file deliberately NOT mounted rides in by accident: WILLOW_KEYRING points at
+#: config/verifiers.json (ed25519 private halves, unmounted on purpose), and a
+#: task that inherits the name without the file reports "no keyring at …"
+#: instead of "keyring disabled" — 40 of willow-mcp's tests fail that way in
+#: the sandbox and pass on the host. Deleting the line from $WILLOW_HOME/env
+#: would fix Kart and break the operator's own terminal. Overridable via the
+#: "env_deny" key in kart-sandbox.json; applied last, after every source.
+_DEFAULT_ENV_DENY = ("WILLOW_KEYRING",)
+
 #: psycopg2's default socket directory. Bound only under allow_db (build_bwrap_argv);
 #: a config listing it in an unconditional bind list undoes that.
 _PG_SOCKET_DIR = "/var/run/postgresql"
@@ -857,7 +868,47 @@ def kart_env(
         for key in [k for k in env if k.startswith(cred_prefixes)]:
             del env[key]
 
+    # Unconditional deny by exact name — after every source (os.environ, the
+    # fleet env file, the defaults above) so nothing re-adds a denied name.
+    env_deny = cfg.get("env_deny")
+    if env_deny is None:
+        env_deny = _DEFAULT_ENV_DENY
+    for key in env_deny:
+        env.pop(str(key), None)
+
+    # XDG_RUNTIME_DIR names a path that only exists inside the sandbox when the
+    # config binds it (/run/user or {{XDG_RUNTIME_DIR}} in a bind list). The
+    # vendored default binds it; an operator who removed those binds to close
+    # the desktop-bus exposure (willow-mcp env-fs.write-3ea8d27806c2) was left
+    # with a variable pointing at nothing, which some tools warn on and a few
+    # fail on. Emit it only when it is actually reachable.
+    xdg = env.get("XDG_RUNTIME_DIR")
+    if xdg and not _xdg_runtime_bound(cfg, repo, xdg):
+        del env["XDG_RUNTIME_DIR"]
+
     return env
+
+
+def _xdg_runtime_bound(cfg: dict, repo: Path | None, xdg: str) -> bool:
+    """Whether any configured bind (rendered with the same template context the
+    mount collector uses) is `xdg` itself or an ancestor of it, and exists on
+    the host — the conditions under which the path will be present in bwrap."""
+    ctx = _template_ctx(repo)
+    try:
+        target = Path(xdg).resolve(strict=False)
+    except OSError:
+        return False
+    for key in ("bind_read_only", "bind_read_write", "bind_try", "bind_try_read_only"):
+        for raw in cfg.get(key) or ():
+            if not isinstance(raw, str):
+                continue
+            try:
+                bound = Path(_render(raw, ctx)).resolve(strict=False)
+            except (OSError, KeyError, ValueError):
+                continue
+            if (bound == target or bound in target.parents) and bound.exists():
+                return True
+    return False
 
 
 def sandbox_manifest(
