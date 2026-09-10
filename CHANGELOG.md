@@ -31,6 +31,13 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.2.1](https://github.com/willow-memory/kartikeya/compare/v0.2.0...v0.2.1) (2026-09-10)
+
+
+### Fixed
+
+* **sandbox:** env_deny list by exact name; emit XDG_RUNTIME_DIR only when a bind reaches it ([c1e25fb](https://github.com/willow-memory/kartikeya/commit/c1e25fb434f6ee7b27897027d8163d7c3aa9eb50))
+
 ## [0.2.0](https://github.com/willow-memory/kartikeya/compare/v0.1.0...v0.2.0) (2026-09-07)
 
 
