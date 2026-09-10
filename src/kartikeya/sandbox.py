@@ -339,6 +339,32 @@ def work_root_read_only(root: Path | None = None) -> bool:
     return "{{WILLOW_ROOT}}" in ro and "{{WILLOW_ROOT}}" not in rw
 
 
+def path_read_only_in_policy(path: str | Path, root: Path | None = None) -> bool | None:
+    """How the resolved mount policy binds ``path``: True read-only, False
+    read-write, None when no bind covers it at all.
+
+    Longest matching bind wins, which is how bwrap applies them too: the
+    read-write ``{{WILLOW_ROOT}}/worktrees`` and ``.git`` children answer False
+    under a read-only root, and a checkout bound read-write by a parent entry
+    (``{{HOME}}/github/<org>``) answers False for every path inside it. The
+    task scanner asks this about the directory a git verb will run in, so a
+    tree rewrite is refused only where the half-write can actually happen —
+    inside the read-only root — and not policy-wide (gap bd6284e3496d).
+    """
+    try:
+        target = str(Path(path).expanduser().resolve())
+    except OSError:
+        return None
+    best: bool | None = None
+    best_len = -1
+    for host, _container, ro in collect_bind_mounts(root):
+        h = str(host).rstrip("/") or "/"
+        if target == h or target.startswith(h + "/"):
+            if len(h) > best_len:
+                best, best_len = ro, len(h)
+    return best
+
+
 def is_vendored_default(source: str) -> bool:
     """True when ``source`` is the package's own product-neutral fallback.
 
