@@ -442,6 +442,30 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
     for raw in cfg.get("bind_try", []):
         _add(Path(_render(str(raw), ctx)), False)
 
+    # A pip-installed box resolves the work root to the installed willow_mcp
+    # package tree, and a policy that binds its parent read-write (~/.local is
+    # in the shipped bind_read_write; a user-site install lives under it) hands
+    # a task write access to gate.py — the code deciding what tasks may do. The
+    # fleet is masked because a checkout exists; a consumer install is not
+    # (WHERE_KART_GOES.md, gap 939264d1298e). The installed tree is never
+    # writable from a task: if a read-write bind covers it, overlay it
+    # read-only. bwrap applies the later, more specific bind, and this list is
+    # emitted sorted by path, so the child overlay wins over its parent.
+    installed = _installed_willow_mcp_root()
+    if installed is not None:
+        ikey = str(installed)
+        covering = [
+            k for k, (_h, _c, ro) in mounts.items()
+            if not ro and (k == ikey or ikey.startswith(k.rstrip("/") + "/"))
+        ]
+        if covering:
+            _log.warning(
+                "kart-sandbox: the installed willow_mcp tree %s is covered by a "
+                "read-write bind (%s); overlaying it read-only. A task must not be "
+                "able to edit the code that gates it.", ikey, ", ".join(sorted(covering)),
+            )
+            mounts[ikey] = (installed, installed, True)
+
     scan_roots = [
         Path(_render(str(raw), ctx))
         for raw in cfg.get("worktree_scan_roots", ["{{WILLOW_ROOT}}/worktrees"])
@@ -669,28 +693,26 @@ def build_bwrap_argv(
             args += ["--bind", str(_pg_sock.resolve()), str(_pg_sock)]
 
     if allow_net:
-        # Credentials are present ONLY on a network-opted task (S1, GAP-B/C).
-        # All read-only: a task may use them, never modify or replace them.
+        # No GitHub credential enters the sandbox on ANY network mode (operator
+        # ruling 2026-09-10, "kart push is brokered"). ~/.netrc and ~/.config/gh
+        # used to be bound read-only here under allow_net; they are not bound at
+        # all now. Who holds the key and who initiates a push are two questions:
+        # the task initiates, the host-side broker holds the credential and
+        # performs the push inside a signed git.push envelope. A task that needs
+        # GitHub asks for it; it never carries it. The env-prefix half of the
+        # same rule is the policy's credential_env_prefixes list.
         home = Path.home()
-        netrc = home / ".netrc"
-        if netrc.is_file():
-            args += ["--ro-bind", str(netrc), str(netrc)]
-
-        gh_cfg = home / ".config" / "gh"
-        if gh_cfg.is_dir():
-            args += ["--ro-bind", str(gh_cfg), str(gh_cfg)]
 
         # ~/.ssh is never bound (S1) — private keys do not enter the sandbox.
-        # SSH git auth flows through the agent socket; host-key verification needs
-        # only known_hosts (read-only).
+        # The SSH agent socket is not bound either (operator, 2026-09-10: "include
+        # SSH as well"). It exposed no key material, but a socket the agent
+        # answers on is a credential in effect: a task could sign as the
+        # operator for any ssh remote. Same rule as gh/netrc — the broker holds
+        # the key, the task asks. Host-key verification is not a credential, so
+        # known_hosts stays, read-only, for whatever ssh a task still does.
         known_hosts = home / ".ssh" / "known_hosts"
         if known_hosts.is_file():
             args += ["--ro-bind", str(known_hosts), str(known_hosts)]
-        ssh_sock = os.environ.get("SSH_AUTH_SOCK", "").strip()
-        if ssh_sock and Path(ssh_sock).exists():
-            # The agent socket is read-write (clients write requests to it), but it
-            # exposes no key material — the agent holds the keys out of process.
-            args += ["--bind", ssh_sock, ssh_sock]
 
         # Ubuntu/Debian nsswitch.conf has mdns4_minimal [NOTFOUND=return] before dns,
         # which causes non-.local lookups to abort before reaching the DNS backend.
