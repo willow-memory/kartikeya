@@ -34,9 +34,11 @@ tracked in willow-mcp#111.
 - **Backend-swappable.** SQLite (bundled), Postgres, or a custom backend behind
   the same interface.
 - **Sandboxed and network-gated.** Tasks run network-isolated unless the stored
-  task text carries a `# allow_net` directive; credentials reach only network-
-  enabled tasks. (Who is allowed to *write* that directive is the host's call —
-  see the security note in `docs/DESIGN.md`.)
+  task text carries a `# allow_net` directive; inference credentials reach only
+  network-enabled tasks. GitHub credentials never enter the sandbox on any
+  mode: a task that needs to push asks the host, which holds the key and
+  performs the push under its own authorization. (Who is allowed to *write*
+  that directive is the host's call — see the security note in `docs/DESIGN.md`.)
 
 ## Install
 
