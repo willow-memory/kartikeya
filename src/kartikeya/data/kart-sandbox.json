@@ -72,7 +72,7 @@
   },
   "_security_notes": {
     "github_ro": "~/github is read-only, and WILLOW_ROOT is read-only WITH it. Only the work root ({{WILLOW_ROOT}}/worktrees) and discovered worktrees nest read-write on top. Hosts promote additional repos to RW via an override config.",
-    "ssh_dropped": "~/.ssh is not bound. SSH git uses SSH_AUTH_SOCK (via /run/user) + known_hosts (ro), both only on allow_net. Private keys never enter the sandbox.",
+    "ssh_dropped": "~/.ssh is not bound, and since 2026-09-10 neither is the SSH agent socket: a socket the agent answers on is a credential in effect, and a task must not be able to sign as the operator for any remote. known_hosts is bound read-only under allow_net for host-key verification only. Private keys never enter the sandbox.",
     "creds_gated": "credential_env_prefixes are present only on allow_net. A no-network task gets zero credentials. The list is inference keys only: publishing (TWINE_, PYPI_, NPM_), cloud (AWS_), messaging (DISCORD_) and GitHub (GITHUB_) keys never enter a task on any mode, and neither do ~/.config/gh, ~/.netrc or the SSH agent socket — those acts are push-shaped and belong to the host, which holds the key and performs the act under its own authorization (operator rulings 2026-09-10). known_hosts is bound read-only under allow_net for host-key verification only.",
     "db_gated": "db_env_prefixes and /var/run/postgresql socket bind are present only on allow_db. Default tasks cannot reach the local Postgres lane.",
     "localhost_tier": "# allow_localhost shares the host network namespace (loopback works) but still strips credentials. Weaker than --unshare-net; prefer over allow_net for local-only work.",

@@ -73,9 +73,12 @@ _DEFAULT_ENV_DENY = ("WILLOW_KEYRING",)
 #: a config listing it in an unconditional bind list undoes that.
 _PG_SOCKET_DIR = "/var/run/postgresql"
 
+#: Inference keys only (operator rulings 2026-09-10). GITHUB_, the publishing
+#: prefixes (TWINE_, PYPI_, NPM_), AWS_ and DISCORD_ are gone from the default:
+#: those are push-shaped acts, and the host performs them under its own
+#: authorization rather than handing a task the key.
 _DEFAULT_CREDENTIAL_PREFIXES = (
-    "TWINE_", "PYPI_", "ANTHROPIC_", "OPENROUTER_", "GROQ_", "GITHUB_",
-    "NPM_", "HUGGINGFACE_", "HF_", "OPENAI_", "AWS_", "DISCORD_",
+    "ANTHROPIC_", "OPENROUTER_", "GROQ_", "HUGGINGFACE_", "HF_", "OPENAI_",
 )
 
 

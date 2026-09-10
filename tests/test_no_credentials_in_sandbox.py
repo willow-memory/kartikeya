@@ -100,8 +100,10 @@ def test_vendored_default_promises_no_github_or_publishing_prefix(vendored_defau
     for prefix in ("GITHUB_", "TWINE_", "PYPI_", "NPM_", "AWS_", "DISCORD_", "SSH_AUTH"):
         assert prefix not in cfg["env_prefixes"], prefix
         assert prefix not in cfg["credential_env_prefixes"], prefix
-    # Inference keys remain the credential lane.
+    # Inference keys remain the credential lane, in the file and in the code
+    # default a config without the key falls back to.
     assert "GROQ_" in cfg["credential_env_prefixes"]
+    assert set(sandbox._DEFAULT_CREDENTIAL_PREFIXES) == set(cfg["credential_env_prefixes"])
 
 
 # ── the installed tree is never writable ─────────────────────────────────────
