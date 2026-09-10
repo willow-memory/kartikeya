@@ -31,6 +31,14 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.2.2](https://github.com/willow-memory/kartikeya/compare/v0.2.1...v0.2.2) (2026-09-10)
+
+
+### Fixed
+
+* **scan:** refuse tree-rewriting git verbs under a read-only WILLOW_ROOT ([5f997d0](https://github.com/willow-memory/kartikeya/commit/5f997d029b23f509857fb81d8a5d1aa2bca514e6))
+* **scan:** refuse tree-rewriting git verbs under a read-only WILLOW_ROOT ([e3a9f2f](https://github.com/willow-memory/kartikeya/commit/e3a9f2fde4444519308641b7d28f94a73dd4e807))
+
 ## [0.2.1](https://github.com/willow-memory/kartikeya/compare/v0.2.0...v0.2.1) (2026-09-10)
 
 
