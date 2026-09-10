@@ -320,6 +320,22 @@ def load_sandbox_config(root: Path | None = None) -> dict:
     return resolve_sandbox_config(root)[0]
 
 
+def work_root_read_only(root: Path | None = None) -> bool:
+    """Whether the resolved mount policy binds ``{{WILLOW_ROOT}}`` read-only.
+
+    True under the shipped default and under any fleet policy that kept
+    `work_root_is_not_the_product`. A task that rewrites the working tree
+    under such a root half-succeeds — refs move in the writable .git, the
+    checkout cannot follow — so the task scanner asks this before admitting
+    a tree-rewriting git verb (gap 5fd840cb5000). A policy that binds the root
+    read-write (or lists it nowhere) answers False and nothing is refused.
+    """
+    cfg = load_sandbox_config(root)
+    ro = cfg.get("bind_read_only") or []
+    rw = cfg.get("bind_read_write") or []
+    return "{{WILLOW_ROOT}}" in ro and "{{WILLOW_ROOT}}" not in rw
+
+
 def is_vendored_default(source: str) -> bool:
     """True when ``source`` is the package's own product-neutral fallback.
 

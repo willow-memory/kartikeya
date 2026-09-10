@@ -59,6 +59,59 @@ _FLEET_ALLOWED: tuple[str, ...] = (
 _ALWAYS_BLOCK_CATEGORIES = frozenset({"exfiltration", "obfuscation", "secret_access",
                                       "resource_exhaustion"})
 
+# Git verbs that rewrite the WORKING TREE. Under a read-only WILLOW_ROOT with a
+# writable .git (the fleet's shape since 2026-09-09) these half-succeed: refs
+# and HEAD move, files cannot, and git degrades to "carry the local changes",
+# leaving the checkout on a new branch with another branch's content staged
+# dirty — measured 2026-09-09, gap 5fd840cb5000. Commits, adds and reads need
+# only .git and stay allowed. `checkout -b NAME` / `switch -c NAME` with no
+# start point create a branch at HEAD and touch no file, so they pass; the
+# same with a start point, or any bare checkout/switch of a ref, is refused.
+_TREE_REWRITE_RE = re.compile(
+    r"^git\s+(?:"
+    r"(?:checkout|switch)\b(?!\s+(?:-b|-c)\s+\S+\s*$)"
+    r"|merge\b|rebase\b|restore\b|clean\b"
+    r"|reset\s+(?:--hard|--merge|--keep)\b"
+    r"|stash\s+(?:pop|apply)\b"
+    r")",
+    re.IGNORECASE,
+)
+_TREE_REWRITE_MESSAGE = (
+    "refuses to rewrite the working tree under a read-only WILLOW_ROOT: "
+    "this git verb would move refs in the writable .git and then fail to update "
+    "files, leaving the checkout half-switched. Read verbs, add and commit are "
+    "fine here; do tree work in {{WILLOW_ROOT}}/worktrees, the writable lane."
+)
+
+
+def _root_read_only() -> bool:
+    """Lazy import: sandbox is the heavier module and this is only consulted
+    when a git fragment matches."""
+    try:
+        from .sandbox import work_root_read_only
+        return work_root_read_only()
+    except Exception:
+        return False
+
+
+def check_tree_rewrite(task_text: str = "") -> dict | None:
+    """Block git verbs that rewrite the working tree when WILLOW_ROOT is bound
+    read-only. No-op under a read-write root. See `_TREE_REWRITE_RE`."""
+    fragments = [f for f in _shell_fragments_from_task(task_text or "")
+                 if _TREE_REWRITE_RE.search(f.strip())]
+    if not fragments or not _root_read_only():
+        return None
+    return {
+        "error": f"[KART-SECURITY] {_TREE_REWRITE_MESSAGE} (fragment: {fragments[0]!r})",
+        "kart_scan": {
+            "category": "tree_rewrite_on_read_only_root",
+            "severity": SEV_HIGH,
+            "message": _TREE_REWRITE_MESSAGE,
+            "where": "task",
+            "fragment": fragments[0],
+        },
+    }
+
 # Host-configurable source paths that must not be read/written via task text.
 # Empty by default (standalone). A fleet host sets this to protect its hook
 # runner / settings files. Merged with $KART_HOOK_GUARD_PATHS at call time.
@@ -205,6 +258,10 @@ def check_kart_task(task_text: str = "", *, script_body: str = "") -> dict | Non
     tamper = check_hook_tamper(task_text, script_body=script_body)
     if tamper:
         return tamper
+
+    rewrite = check_tree_rewrite(task_text)
+    if rewrite:
+        return rewrite
 
     if script_body.strip():
         issues = scan_write("", script_body)
