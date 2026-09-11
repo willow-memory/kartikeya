@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 
 from .security_scan import (
     SEV_CRITICAL,
@@ -59,58 +60,119 @@ _FLEET_ALLOWED: tuple[str, ...] = (
 _ALWAYS_BLOCK_CATEGORIES = frozenset({"exfiltration", "obfuscation", "secret_access",
                                       "resource_exhaustion"})
 
-# Git verbs that rewrite the WORKING TREE. Under a read-only WILLOW_ROOT with a
-# writable .git (the fleet's shape since 2026-09-09) these half-succeed: refs
-# and HEAD move, files cannot, and git degrades to "carry the local changes",
-# leaving the checkout on a new branch with another branch's content staged
-# dirty — measured 2026-09-09, gap 5fd840cb5000. Commits, adds and reads need
-# only .git and stay allowed. `checkout -b NAME` / `switch -c NAME` with no
-# start point create a branch at HEAD and touch no file, so they pass; the
-# same with a start point, or any bare checkout/switch of a ref, is refused.
-_TREE_REWRITE_RE = re.compile(
-    r"^git\s+(?:"
-    r"(?:checkout|switch)\b(?!\s+(?:-b|-c)\s+\S+\s*$)"
-    r"|merge\b|rebase\b|restore\b|clean\b"
-    r"|reset\s+(?:--hard|--merge|--keep)\b"
-    r"|stash\s+(?:pop|apply)\b"
-    r")",
-    re.IGNORECASE,
-)
-_TREE_REWRITE_MESSAGE = (
-    "refuses to rewrite the working tree under a read-only WILLOW_ROOT: "
-    "this git verb would move refs in the writable .git and then fail to update "
-    "files, leaving the checkout half-switched. Read verbs, add and commit are "
-    "fine here; do tree work in {{WILLOW_ROOT}}/worktrees, the writable lane."
-)
+# Git verbs that rewrite the WORKING TREE. Under a read-only checkout with a
+# writable .git (the fleet's WILLOW_ROOT shape since 2026-09-09) these
+# half-succeed: refs and HEAD move, files cannot, and git degrades to "carry
+# the local changes", leaving the checkout on a new branch with another
+# branch's content staged dirty — measured 2026-09-09, gap 5fd840cb5000.
+# Commits, adds and reads need only .git and stay allowed. Branch creation at
+# HEAD (`checkout -b NAME`, `switch -c NAME`, any flag order) touches no file
+# and passes; the same with a start point, or any bare checkout/switch of a
+# ref, is a rewrite.
+#
+# The refusal is judged PER DIRECTORY, not policy-wide (gap bd6284e3496d):
+# the first cut asked only "does the policy bind WILLOW_ROOT read-only" and so
+# refused `git checkout -- file` inside a checkout that was bound read-write by
+# a parent entry, where the half-write cannot happen. Now the directory the
+# verb runs in — a leading `cd X` in the same chain, else the task's working
+# directory — is resolved against the mount policy, and only a read-only bind
+# with no writable child over it refuses.
+_TREE_WRITE_VERBS = frozenset({"merge", "rebase", "restore", "clean"})
+_RESET_TREE_FLAGS = frozenset({"--hard", "--merge", "--keep"})
+_BRANCH_CREATE_FLAGS = frozenset({"-b", "-B", "-c", "-C"})
+_CD_RE = re.compile(r"^cd\s+(\S+)\s*$")
 
 
-def _root_read_only() -> bool:
-    """Lazy import: sandbox is the heavier module and this is only consulted
-    when a git fragment matches."""
+def _tree_rewrite_verb(fragment: str) -> bool:
+    """Whether one shell fragment is a git verb that rewrites the working tree."""
     try:
-        from .sandbox import work_root_read_only
-        return work_root_read_only()
-    except Exception:
+        toks = shlex.split(fragment.strip())
+    except ValueError:
+        toks = fragment.strip().split()
+    if len(toks) < 2 or toks[0] != "git":
         return False
+    verb, rest = toks[1], toks[2:]
+    if verb in ("checkout", "switch"):
+        for i, t in enumerate(rest):
+            if t in _BRANCH_CREATE_FLAGS:
+                # `-b NAME` at HEAD creates a ref and touches no file. A start
+                # point after the name (`-b NAME origin/x`) checks that ref out.
+                positional_after = [x for x in rest[i + 2:] if not x.startswith("-")]
+                return bool(positional_after)
+        return True
+    if verb in _TREE_WRITE_VERBS:
+        return True
+    if verb == "reset":
+        return any(t in _RESET_TREE_FLAGS for t in rest)
+    if verb == "stash":
+        return bool(rest) and rest[0] in ("pop", "apply")
+    return False
 
 
-def check_tree_rewrite(task_text: str = "") -> dict | None:
-    """Block git verbs that rewrite the working tree when WILLOW_ROOT is bound
-    read-only. No-op under a read-write root. See `_TREE_REWRITE_RE`."""
-    fragments = [f for f in _shell_fragments_from_task(task_text or "")
-                 if _TREE_REWRITE_RE.search(f.strip())]
-    if not fragments or not _root_read_only():
+def _dir_read_only(path: str) -> bool | None:
+    """Ask the mount policy about ``path``. Lazy import: sandbox is the heavier
+    module and this is only consulted when a git fragment matches. An
+    unresolvable policy answers None (unknown), which does not refuse."""
+    try:
+        from .sandbox import path_read_only_in_policy
+        return path_read_only_in_policy(path)
+    except Exception:
         return None
-    return {
-        "error": f"[KART-SECURITY] {_TREE_REWRITE_MESSAGE} (fragment: {fragments[0]!r})",
-        "kart_scan": {
-            "category": "tree_rewrite_on_read_only_root",
-            "severity": SEV_HIGH,
-            "message": _TREE_REWRITE_MESSAGE,
-            "where": "task",
-            "fragment": fragments[0],
-        },
-    }
+
+
+def _task_cwd() -> str:
+    """Where a task's shell starts: the resolved WILLOW_ROOT (the worker's
+    working directory on the fleet), else the process cwd."""
+    try:
+        from .sandbox import willow_repo_root
+        root = willow_repo_root()
+        if root is not None:
+            return str(root)
+    except Exception:
+        pass
+    return os.getcwd()
+
+
+def _expand_cd_target(raw: str, current: str) -> str:
+    target = os.path.expanduser(os.path.expandvars(raw.strip("'\"")))
+    return target if os.path.isabs(target) else os.path.join(current, target)
+
+
+def check_tree_rewrite(task_text: str = "", *, cwd: str | None = None) -> dict | None:
+    """Refuse a git verb that would rewrite the working tree of a checkout the
+    mount policy binds read-only. A verb in a read-write checkout, or in the
+    writable lane under a read-only root, passes. See `_tree_rewrite_verb`."""
+    current = cwd or _task_cwd()
+    for fragment in _shell_fragments_from_task(task_text or ""):
+        text = fragment.strip()
+        m = _CD_RE.match(text)
+        if m:
+            current = _expand_cd_target(m.group(1), current)
+            continue
+        if not _tree_rewrite_verb(text):
+            continue
+        if _dir_read_only(current) is not True:
+            continue
+        message = (
+            f"refuses to rewrite the working tree of {current}, which the mount "
+            f"policy binds read-only: this git verb would move refs in the writable "
+            f".git and then fail to update files, leaving the checkout half-switched. "
+            f"Read verbs, add, commit and `checkout -b NAME` are fine here; do tree "
+            f"work in a read-write checkout or under {{{{WILLOW_ROOT}}}}/worktrees, "
+            f"the writable lane."
+        )
+        return {
+            "error": f"[KART-SECURITY] {message} (fragment: {text!r})",
+            "kart_scan": {
+                "category": "tree_rewrite_on_read_only_root",
+                "severity": SEV_HIGH,
+                "message": message,
+                "where": "task",
+                "fragment": text,
+                "cwd": current,
+            },
+        }
+    return None
 
 # Host-configurable source paths that must not be read/written via task text.
 # Empty by default (standalone). A fleet host sets this to protect its hook
