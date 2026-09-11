@@ -31,6 +31,13 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.2.4](https://github.com/willow-memory/kartikeya/compare/v0.2.3...v0.2.4) (2026-09-11)
+
+
+### Fixed
+
+* **scan:** judge tree rewrites per directory, not policy-wide ([caaa001](https://github.com/willow-memory/kartikeya/commit/caaa0011af970586646672fe3fcd6d638c7de900))
+
 ## [0.2.3](https://github.com/willow-memory/kartikeya/compare/v0.2.2...v0.2.3) (2026-09-10)
 
 
