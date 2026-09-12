@@ -17,8 +17,12 @@ host, no required database server.
 
 **Extracted and published.** The sandbox/worker/execute core is fully landed
 (`sandbox.py`, `worker.py`, `execute.py`, `queue.py`), tested, and released on
-PyPI as `kartikeya` (0.0.9) — `pip install kartikeya`, or `pip install
-willow-mcp`, which floors it at `>=0.0.9,<1.0.0`. The cap is a real
+PyPI as `kartikeya` — `pip install kartikeya` gets whatever the latest tag
+published (see `.release-please-manifest.json` for the version this tree
+currently reports), or `pip install willow-mcp`, which depends on it and
+floors it at whatever range willow-mcp's own `pyproject.toml` currently pins
+— naming the number here would only go stale the next time either project
+tags a release. The cap is a real
 compatibility range rather than decoration: `bump-minor-pre-major` is **false**
 here, so a breaking change cuts 1.0.0 instead of hiding in a minor. The staged lift in `docs/DESIGN.md` is done
 through stage 4; stage 5 (legacy fleet monolith deleting its `core/kart_*` copy) is

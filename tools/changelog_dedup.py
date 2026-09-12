@@ -11,23 +11,39 @@ commit carrying its title. willow-mcp shipped three releases that way: 2.1.2 and
 collapses entries sharing a scope, so the merge commit displaced `0073767` and a
 shipped fix went undocumented. jeles 0.5.0 hit the duplicate half.
 
-**IT HAS NOT HAPPENED HERE, AND CANNOT YET.** This repository has no
-CHANGELOG.md. It carries tags v0.0.3 through v0.0.9, but no `chore(master):
-release` commit exists anywhere in its history and the changelog file has never
-been written — so release-please has never actually cut a release here, and
-there is nothing for it to have duplicated. This is installed *ahead* of the
-problem, on the reasoning that the moment release-please does produce a
-changelog, this repo's merge convention makes the duplication immediate.
+WHEN THIS WAS WRITTEN (2026-08-04): this repository had no CHANGELOG.md. It
+carried tags v0.0.3 through v0.0.9, but no `chore(master): release` commit
+existed anywhere in its history and the changelog file had never been
+written — so release-please had never actually cut a release here, and there
+was nothing for it to have duplicated. This was installed *ahead* of the
+problem, on the reasoning that the moment release-please produced a
+changelog, this repo's merge convention would make the duplication immediate.
+That did not stay true for long: CHANGELOG.md was backfilled the same day
+(`docs(changelog): backfill the history that predates release-please`), and
+the first `chore(master): release` landed the next day (0.0.10).
 
-Said plainly, because it is the honest status: the behaviour of this file is
-verified by its tests and by its identical twins in willow-mcp and jeles, and
-**not** by having corrected a real changelog here. Its first live run will be
-its first live run.
+AS OF 2026-09-12: it has happened, repeatedly. CHANGELOG.md exists, the
+manifest reads 0.2.4, and a dozen-plus `chore(master): release` commits are in
+this repo's history (most recently `010ae1c`, 0.2.4) — so this tool has run
+for real on real release PRs, not only under test. `git log --oneline --all
+--grep="chore(master): release"` shows the trail.
 
-One deliberate difference from those twins: a missing CHANGELOG.md bails with a
-readable message rather than a traceback, because here that is the normal state
-of the repo rather than a broken checkout. Neither of the others can reach that
-branch, which is why they do not carry it.
+What has NOT held up is the twin claim that followed. Measured with `diff`
+against the same file in this fleet's other repos: byte-identical to Forge's
+copy (339 lines, both — a genuine twin). willow-mcp's copy (289 lines) and
+jeles' copy (293 lines) are not twins but earlier snapshots of this file: they
+still carry the original deliberate difference (a missing CHANGELOG.md bails
+readable there too, not with a traceback), but they are also missing fixes
+landed here since — matching `## ` rather than only `## [` when a generated
+section's end is found, so a hand-written history below it is not swallowed,
+plus the guard for a changelog that exists but carries no generated section
+yet — so "one deliberate difference" undercounted even at the time it was
+written. corpus-lens's copy (342
+lines) differs only in this status paragraph, which correctly describes its
+own repo's history instead of this one's; its code body below the docstring
+is byte-for-byte identical to this file's. Re-syncing willow-mcp's and
+jeles' bodies to match is out of scope for this change — it is a behaviour
+change, not a docstring correction.
 
 WHAT IT DOES
 ------------
