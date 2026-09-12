@@ -396,6 +396,11 @@ def _trailers_gate_defects(workflow: dict) -> list[str]:
     when it is wired to verify every trailer in the full history against the
     pile on every push and pull request to master."""
     defects: list[str] = []
+    # verify is read-only, so the token must be granted nothing but reading
+    # the checkout. An absent block means the repository's default grant,
+    # which may be write; CodeQL flagged the absence on this file's first run.
+    if workflow.get("permissions") != {"contents": "read"}:
+        defects.append("permissions are not exactly `contents: read`; verify only reads")
     # `on:` parses as the boolean True — PyYAML applies the YAML 1.1 rule.
     triggers = workflow.get(True) or workflow.get("on") or {}
     for event in ("push", "pull_request"):
@@ -443,6 +448,7 @@ def test_the_trailer_gate_check_catches_a_planted_shallow_and_silent_workflow():
         "      - run: echo verified\n"
     )
     assert _trailers_gate_defects(planted) == [
+        "permissions are not exactly `contents: read`; verify only reads",
         "push does not target master",
         "pull_request does not target master",
         "checkout is shallow: verify would read one commit and pass vacuously",
@@ -453,6 +459,7 @@ def test_the_trailer_gate_check_catches_a_planted_shallow_and_silent_workflow():
         "on:\n"
         "  push:\n    branches: [master]\n"
         "  pull_request:\n    branches: [master]\n"
+        "permissions:\n  contents: read\n"
         "jobs:\n  verify-trailers:\n    steps:\n"
         "      - uses: actions/checkout@v7\n        with:\n          fetch-depth: 0\n"
         "      - run: pip install \"willow-reconciler>=0.6.0\"\n"

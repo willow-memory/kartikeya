@@ -15,6 +15,13 @@ on:
   pull_request:
     branches: [master]
 
+# `reconciler verify` is read-only (`git log` only), so the job's token needs
+# nothing beyond reading the checkout. Without this block the token gets the
+# repository's default grant, which may be write; CodeQL flagged exactly that
+# on the first run of this file.
+permissions:
+  contents: read
+
 jobs:
   verify-trailers:
     runs-on: ubuntu-latest
