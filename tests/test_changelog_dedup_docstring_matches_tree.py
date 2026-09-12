@@ -16,6 +16,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[1]
 _TOOL = _REPO / "tools" / "changelog_dedup.py"
 
@@ -46,14 +48,26 @@ def test_the_docstring_no_longer_claims_the_tree_has_no_changelog():
     )
 
 
-def test_the_stale_claim_check_actually_catches_a_stale_docstring():
-    """Planted: a docstring reverted to the old wording would be caught by the
-    assertion above. Proven against a synthetic snippet, not by editing the
-    real file, so this guard test never itself goes stale."""
-    stale_docstring = (
-        "Rebuild the newest CHANGELOG section from the commits.\n\n"
+def test_the_stale_claim_check_actually_catches_a_stale_docstring(tmp_path):
+    """Planted: a module whose docstring is reverted to the old wording, read
+    through the same `_module_docstring` the real check uses — so the parser
+    is exercised, not just the substring. The first version of this test
+    asserted the phrase against a string it had built, which proved the `in`
+    and nothing about the helper that reads the real file. Proven against a
+    synthetic module, not by editing the real file, so this guard test never
+    itself goes stale."""
+    stale = tmp_path / "changelog_dedup.py"
+    stale.write_text(
+        '"""Rebuild the newest CHANGELOG section from the commits.\n'
+        "\n"
         "**IT HAS NOT HAPPENED HERE, AND CANNOT YET.** This repository has no\n"
-        "CHANGELOG.md. It carries tags v0.0.3 through v0.0.9, but no "
-        "`chore(master): release` commit exists anywhere in its history."
+        "CHANGELOG.md. It carries tags v0.0.3 through v0.0.9, but no\n"
+        '`chore(master): release` commit exists anywhere in its history.\n"""\n'
+        "from __future__ import annotations\n"
     )
-    assert _STALE_CLAIM in stale_docstring, "planted claim should trip the guard"
+    assert _STALE_CLAIM in _module_docstring(stale), "planted claim should trip the guard"
+
+    bare = tmp_path / "no_docstring.py"
+    bare.write_text("from __future__ import annotations\n")
+    with pytest.raises(AssertionError):
+        _module_docstring(bare)

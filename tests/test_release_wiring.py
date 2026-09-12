@@ -105,6 +105,20 @@ def _names_a_non_suppressed_credential(value: object) -> bool:
     return any(c in text for c in NON_SUPPRESSED_CREDENTIALS)
 
 
+def test_the_credential_scan_catches_a_planted_bot_token():
+    """Planted: the scan above had never been shown to fire. It is the whole
+    enforcement of "no GITHUB_TOKEN in the release job", and until this test
+    every caller handed it a value that happened to pass. A bot token in
+    either spelling must come back False, and each accepted credential True,
+    whether it arrives as a string or as a whole `env:` mapping."""
+    assert not _names_a_non_suppressed_credential("${{ secrets.GITHUB_TOKEN }}")
+    assert not _names_a_non_suppressed_credential({"GH_TOKEN": "${{ github.token }}"})
+    assert _names_a_non_suppressed_credential("${{ secrets.RELEASE_PLEASE_TOKEN }}")
+    assert _names_a_non_suppressed_credential(
+        {"GH_TOKEN": "${{ steps.app-token.outputs.token }}"}
+    )
+
+
 def test_release_automation_uses_a_non_suppressed_credential_everywhere():
     """A bot token silently produces no workflow runs: the release PR merges, no
     tag workflow fires, nothing publishes. jeles lost three releases to it."""
@@ -178,6 +192,30 @@ def test_a_changelog_bail_does_not_block_the_release():
     assert _TOOL.exists(), "the workflow calls a script this repo does not ship"
 
 
+def _packaged_paths_declared_in(embedded_python: str) -> tuple:
+    """The `PACKAGED = (...)` literal in the pr-title check's embedded script,
+    read out of the AST. Comments in that script name the other repos' paths
+    on purpose, so this is a parse, not a search."""
+    for node in ast.walk(ast.parse(embedded_python)):
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "PACKAGED":
+            return ast.literal_eval(node.value)
+    raise AssertionError("the pr-title check no longer assigns PACKAGED")
+
+
+def test_the_packaged_path_parse_catches_a_planted_wrong_path():
+    """Planted: a script whose comment names the *right* path and whose
+    assignment names a sibling repo's. The parse returns the assignment —
+    the value that would actually gate releases — and a substring search
+    over the same text would have been satisfied by the comment."""
+    script = (
+        "# kartikeya packages src/kartikeya/ and pyproject.toml\n"
+        "PACKAGED = ('src/willow_mcp/', 'pyproject.toml')\n"
+    )
+    assert _packaged_paths_declared_in(script) == ("src/willow_mcp/", "pyproject.toml")
+    with pytest.raises(AssertionError):
+        _packaged_paths_declared_in("# nothing assigned here\nOTHER = 1\n")
+
+
 def test_the_pr_title_check_guards_both_directions():
     """One direction stops a title inventing a release; the other stops a commit
     releasing something nobody installs. willow-mcp shipped 2.1.5 that way and
@@ -190,10 +228,7 @@ def test_the_pr_title_check_guards_both_directions():
     substring check would flag its own explanation."""
     wf = _REPO / ".github" / "workflows" / "pr-title.yml"
     body = _yaml(wf)["jobs"]["title"]["steps"][-1]["run"].split("<<'PY'")[1].rsplit("PY", 1)[0]
-    tree = ast.parse(body)
-    packaged = next(ast.literal_eval(n.value) for n in ast.walk(tree)
-                    if isinstance(n, ast.Assign)
-                    and getattr(n.targets[0], "id", "") == "PACKAGED")
+    packaged = _packaged_paths_declared_in(body)
 
     assert packaged == ("src/kartikeya/", "pyproject.toml"), packaged
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())

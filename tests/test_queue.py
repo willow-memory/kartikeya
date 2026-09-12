@@ -21,6 +21,24 @@ def _queue(tmp_path) -> SqliteTaskQueue:
     return SqliteTaskQueue(tmp_path / "tasks.db")
 
 
+def _fields_declared_twice(path: Path) -> dict[str, set[str]]:
+    """Per class in `path`, the annotated field names it declares more than
+    once — the thing only the source can show, because `dataclasses.fields()`
+    and `__annotations__` both dedupe."""
+    duplicates: dict[str, set[str]] = {}
+    for node in ast.walk(ast.parse(path.read_text())):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        declared = [
+            n.target.id for n in node.body
+            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+        ]
+        twice = {n for n in declared if declared.count(n) > 1}
+        if twice:
+            duplicates[node.name] = twice
+    return duplicates
+
+
 def test_no_dataclass_field_is_declared_twice():
     """A field declared twice is invisible at runtime — `dataclasses.fields()`
     and `__annotations__` both dedupe — so only the source shows it. It stays
@@ -28,16 +46,30 @@ def test_no_dataclass_field_is_declared_twice():
     and default silently win, while the first (the one carrying the docs, and
     the one a reader stops at) is what everybody believes is in effect. Only an
     AST check can see it, which is why this test parses the file."""
-    tree = ast.parse(Path(kqueue.__file__).read_text())
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        declared = [
-            n.target.id for n in node.body
-            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
-        ]
-        duplicates = {n for n in declared if declared.count(n) > 1}
-        assert not duplicates, f"{node.name} declares {sorted(duplicates)} more than once"
+    duplicates = _fields_declared_twice(Path(kqueue.__file__))
+    assert not duplicates, {
+        cls: f"declares {sorted(names)} more than once" for cls, names in duplicates.items()
+    }
+
+
+def test_the_duplicate_field_scan_catches_a_planted_second_declaration(tmp_path):
+    """Planted: a dataclass that declares `task_id` twice, with a clean class
+    beside it. Only the duplicating class is reported, and only that field."""
+    module = tmp_path / "rows.py"
+    module.write_text(
+        "import dataclasses\n"
+        "\n"
+        "@dataclasses.dataclass\n"
+        "class Row:\n"
+        "    task_id: str\n"
+        "    status: str = 'pending'\n"
+        "    task_id: str = ''\n"
+        "\n"
+        "@dataclasses.dataclass\n"
+        "class Clean:\n"
+        "    task_id: str\n"
+    )
+    assert _fields_declared_twice(module) == {"Row": {"task_id"}}
 
 
 def test_task_row_field_order_is_what_positional_construction_assumes():
