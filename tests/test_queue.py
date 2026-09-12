@@ -14,8 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import QueueStats, SqliteTaskQueue, TaskRow  # noqa: E402
-from kartikeya import queue as kqueue  # noqa: E402
+from kartikeya import QueueStats, SqliteTaskQueue, TaskRow
+from kartikeya import queue as kqueue
 
 
 def _queue(tmp_path) -> SqliteTaskQueue:

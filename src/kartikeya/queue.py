@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 from .lanes import reaper_stale_seconds
 
@@ -127,7 +128,7 @@ class SqliteTaskQueue(TaskQueue):
 
     # Columns added after a released schema — an existing tasks table is
     # migrated in place rather than rebuilt (or silently mis-read).
-    _ADDED_COLUMNS = {
+    _ADDED_COLUMNS: ClassVar[dict[str, str]] = {
         "network_authorization": "TEXT NOT NULL DEFAULT ''",
         "claimed_at": "TEXT",
     }

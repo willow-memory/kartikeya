@@ -22,9 +22,9 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable
 
 from .cgroup_setup import cgroup_status, setup_cgroup
 from .execute import (
@@ -73,7 +73,7 @@ def _process_row(
             handlers=handlers,
             network_authorizer=network_authorizer,
         )
-    except Exception as e:  # defense in depth — execute_task_row already guards
+    except Exception as e:  # noqa: BLE001 — defense in depth; execute_task_row already guards
         status, result = "failed", {"error": str(e), "context": f"{context}_exception"}
     try:
         queue.mark_done(
@@ -81,7 +81,7 @@ def _process_row(
             status=status,
             result=json.dumps(trim_task_result(result, status)),
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — logged; the loop outlives one bad write
         logger.error("mark_done failed for %s: %s", row.task_id, e)
     on_run_event("close", row, status=status)
     if status == "completed":
@@ -105,7 +105,7 @@ def _maybe_reap_and_prune(queue: TaskQueue) -> None:
             continue
         try:
             outcome = fn()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — housekeeping is best-effort and logged
             logger.warning("%s failed: %s", name, e)
             continue
         if name == "reap_stale" and outcome:
@@ -195,7 +195,7 @@ def run_worker(
                 try:
                     claimed = queue.claim_pending(agent, free, lane=lane)
                     last_claim_ok = True
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — logged and remembered in last_claim_ok, never fatal
                     logger.error("claim_pending failed: %s", e)
                     claimed = []
                     last_claim_ok = False

@@ -13,8 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import sandbox  # noqa: E402
-
+from kartikeya import sandbox
 
 # ── repo root resolution (willow-mcp vs fleet) ───────────────────────────────
 
@@ -255,7 +254,7 @@ def test_task_allows_localhost_exact_line_match():
 
 
 def test_parse_task_network_strips_directives():
-    body, net, local, db = sandbox.parse_task_network("curl x\n# allow_net")
+    body, net, _local, db = sandbox.parse_task_network("curl x\n# allow_net")
     assert net is True
     assert db is False
     assert "# allow_net" not in body

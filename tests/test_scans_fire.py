@@ -371,7 +371,7 @@ def _is_scan_helper(
     `check_payload_reach` is the same scan with a different name.
     """
     name = node.name
-    if name.startswith("test_") or name.startswith("__"):
+    if name.startswith(("test_", "__")):
         return False
     if _is_fixture(node):
         return False
@@ -1123,14 +1123,15 @@ def _membership_on_read_text(node: ast.FunctionDef) -> bool:
     direct_names = _direct_text_names(node)
     handles = _open_handles(node)
     for sub in ast.walk(node):
-        if isinstance(sub, ast.Compare) and any(
-            isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops
-        ):
-            if any(
+        if (
+            isinstance(sub, ast.Compare)
+            and any(isinstance(op, (ast.In, ast.NotIn)) for op in sub.ops)
+            and any(
                 _is_text_source(operand, direct_names, handles)
                 for operand in (sub.left, *sub.comparators)
-            ):
-                return True
+            )
+        ):
+            return True
     return False
 
 

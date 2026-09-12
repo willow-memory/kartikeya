@@ -13,12 +13,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import SqliteTaskQueue, TaskRow  # noqa: E402
-from kartikeya import execute as kexec  # noqa: E402
-from kartikeya import worker as kworker  # noqa: E402
-from kartikeya.execute import kart_timeout  # noqa: E402
-from kartikeya.lanes import fast_timeout_seconds, reaper_alignment_warning  # noqa: E402
-
+from kartikeya import SqliteTaskQueue, TaskRow
+from kartikeya import execute as kexec
+from kartikeya import worker as kworker
+from kartikeya.execute import kart_timeout
+from kartikeya.lanes import fast_timeout_seconds, reaper_alignment_warning
 
 # ── kart_timeout lane matrix ────────────────────────────────────────────────
 

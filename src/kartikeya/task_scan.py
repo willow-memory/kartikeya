@@ -20,6 +20,7 @@ Disable the whole scan: WILLOW_KART_SCAN=0
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shlex
@@ -46,8 +47,10 @@ _FLEET_ALLOWED: tuple[str, ...] = (
     r"^pytest\b",
     r"^py\.test\b",
     r"^gh\s+(pr|issue|run|api|repo)\b",
-    r"^git\s+(status|log|diff|show|fetch|pull|push|add|commit|branch|checkout|"
-    r"worktree|rev-parse|merge|rebase|stash|tag|remote|clone|ls-files|grep)\b",
+    (
+        r"^git\s+(status|log|diff|show|fetch|pull|push|add|commit|branch|checkout|"
+        r"worktree|rev-parse|merge|rebase|stash|tag|remote|clone|ls-files|grep)\b"
+    ),
     r"^python3?\s+(-m\s+)?(pytest|ruff|mypy)\b",
     r"^ruff\b",
     r"^mypy\b",
@@ -119,21 +122,19 @@ def _dir_read_only(path: str) -> bool | None:
         from .sandbox import path_read_only_in_policy
 
         return path_read_only_in_policy(path)
-    except Exception:
+    except Exception:  # noqa: BLE001 — an unresolvable policy is "unknown", which the docstring says does not refuse
         return None
 
 
 def _task_cwd() -> str:
     """Where a task's shell starts: the resolved WILLOW_ROOT (the worker's
     working directory on the fleet), else the process cwd."""
-    try:
+    with contextlib.suppress(Exception):
         from .sandbox import willow_repo_root
 
         root = willow_repo_root()
         if root is not None:
             return str(root)
-    except Exception:
-        pass
     return os.getcwd()
 
 
@@ -214,11 +215,13 @@ def _fleet_allowed(fragment: str) -> bool:
 def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]:
     out: list[ScanIssue] = []
     for issue in issues:
-        if issue.severity >= SEV_CRITICAL:
-            out.append(issue)
-        elif issue.category in _ALWAYS_BLOCK_CATEGORIES and issue.severity >= SEV_HIGH:
-            out.append(issue)
-        elif not fleet and issue.severity >= SEV_HIGH:
+        if (
+            issue.severity >= SEV_CRITICAL
+            or issue.category in _ALWAYS_BLOCK_CATEGORIES
+            and issue.severity >= SEV_HIGH
+            or not fleet
+            and issue.severity >= SEV_HIGH
+        ):
             out.append(issue)
     return out
 

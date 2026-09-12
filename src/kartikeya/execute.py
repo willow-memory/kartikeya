@@ -18,8 +18,8 @@ import json
 import os
 import re
 import sys
-import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .queue import TaskQueue, TaskRow
 
@@ -246,7 +246,7 @@ def _network_denial(
         return {"error": "network_authorization_denied: signed envelope missing"}
     try:
         allowed = authorizer(row, envelope)
-    except Exception:
+    except Exception:  # noqa: BLE001 — the verifier is host-supplied; any failure in it is a denial, not a crash
         return {"error": "network_authorization_denied: verifier error"}
     if allowed is not True:
         reason = getattr(authorizer, "last_error", "") or "denied"
@@ -285,7 +285,7 @@ def execute_task_row(
             if denial:
                 return "failed", denial
         elif network_authorizer is not None:
-            _body, allow_net, allow_localhost, allow_db = (
+            _body, allow_net, allow_localhost, _allow_db = (
                 _parse_task_network_directives(cmd)
             )
             if (allow_net or allow_localhost) and not network_authorizer(
@@ -298,7 +298,7 @@ def execute_task_row(
                 }
         try:
             status, result = run_shell_task(cmd, timeout=timeout, context=context)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a task's failure is recorded on its row, never raised past the worker
             status, result = "failed", {"error": str(e)}
     else:
         handler = (handlers or {}).get(ttype)
@@ -316,7 +316,7 @@ def execute_task_row(
         else:
             try:
                 status, result = handler(row, timeout=timeout, context=context)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — same: a handler's failure is the row's result
                 status, result = "failed", {"error": str(e)}
 
     full_stdout = result.pop("_full_stdout", None) if isinstance(result, dict) else None
@@ -363,7 +363,7 @@ def drain_claimed_tasks(
         stored = trim_task_result(result, status)
         try:
             queue.mark_done(row.task_id, status=status, result=json.dumps(stored))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a failed write must not take the loop down; it is reported
             print(
                 f"{log_prefix}: mark_done failed for {row.task_id}: {e}",
                 file=sys.stderr,

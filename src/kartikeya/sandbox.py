@@ -20,6 +20,7 @@ on names this package had never promised.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import functools
 import json
@@ -94,13 +95,11 @@ def bwrap_available() -> bool:
 
 def use_bwrap() -> bool:
     """Whether Kart intends bubblewrap sandboxing (not whether bwrap is installed)."""
-    if os.environ.get("WILLOW_KART_NO_BWRAP", "").strip().lower() in (
+    return os.environ.get("WILLOW_KART_NO_BWRAP", "").strip().lower() not in (
         "1",
         "true",
         "yes",
-    ):
-        return False
-    return True
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -108,10 +107,14 @@ def _bwrap_supports_json_status() -> bool:
     """Whether the host bwrap understands --json-status-fd (KP3/S15)."""
     try:
         h = subprocess.run(
-            ["bwrap", "--help"], capture_output=True, text=True, timeout=5
+            ["bwrap", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
         return "--json-status-fd" in (h.stdout + h.stderr)
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -326,18 +329,16 @@ def resolve_sandbox_config(root: Path | None = None) -> tuple[dict, str]:
     env = os.environ.get("KART_SANDBOX_CONFIG", "").strip()
     if env:
         candidates.append(Path(env).expanduser())
-    try:
+    with contextlib.suppress(Exception):
         from .home import willow_home
 
         candidates.append(willow_home(root) / "kart-sandbox.json")
-    except Exception:
-        pass
     candidates.append(_DEFAULT_CONFIG)
     for path in candidates:
         if path.is_file():
             try:
                 cfg = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
+            except (OSError, ValueError):
                 continue
             _warn_if_db_gate_defeated(cfg, str(path))
             return cfg, str(path)
@@ -385,9 +386,8 @@ def path_read_only_in_policy(path: str | Path, root: Path | None = None) -> bool
     best_len = -1
     for host, _container, ro in collect_bind_mounts(root):
         h = str(host).rstrip("/") or "/"
-        if target == h or target.startswith(h + "/"):
-            if len(h) > best_len:
-                best, best_len = ro, len(h)
+        if (target == h or target.startswith(h + "/")) and len(h) > best_len:
+            best, best_len = ro, len(h)
     return best
 
 
@@ -542,7 +542,7 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
         for venv in venv_candidates(repo):
             if venv.is_dir():
                 _add(venv, True)
-    except Exception:
+    except Exception:  # noqa: BLE001 — any failure in the resolver degrades to the pre-pyenv binds below
         repo_venv = (repo / ".venv-dev") if repo else None
         if repo_venv and repo_venv.is_dir():
             _add(repo_venv, True)
@@ -846,7 +846,7 @@ def _parse_fleet_env_file(path: Path, prefixes: tuple[str, ...]) -> dict[str, st
     """Parse a shell KEY=VALUE env file. Skips comments and blank lines.
     Only includes keys matching prefixes. Strips surrounding quotes from values."""
     result: dict[str, str] = {}
-    try:
+    with contextlib.suppress(Exception):
         for raw in path.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -860,8 +860,6 @@ def _parse_fleet_env_file(path: Path, prefixes: tuple[str, ...]) -> dict[str, st
                 val = val[1:-1]
             if val:
                 result[key] = val
-    except Exception:
-        pass
     return result
 
 
@@ -927,7 +925,7 @@ def kart_env(
             venv_bin = str(bin_dir)
             if venv_bin not in env["PATH"].split(":"):
                 env["PATH"] = venv_bin + ":" + env["PATH"]
-    except Exception:
+    except Exception:  # noqa: BLE001 — same fallback as the binds: the resolver failing means the legacy venv
         venv_bin = None
         if repo and (repo / ".venv-dev" / "bin").is_dir():
             venv_bin = str(repo / ".venv-dev" / "bin")
@@ -952,7 +950,7 @@ def kart_env(
             _path_parts.append(_b)
 
     if "GIT_AUTHOR_NAME" not in env:
-        try:
+        with contextlib.suppress(Exception):
             name = subprocess.check_output(
                 ["git", "config", "--global", "user.name"], text=True
             ).strip()
@@ -965,8 +963,6 @@ def kart_env(
             if email:
                 env["GIT_AUTHOR_EMAIL"] = email
                 env["GIT_COMMITTER_EMAIL"] = email
-        except Exception:
-            pass
 
     # Inside bwrap, /var/run is not present unless allow_db mounted the socket.
     # psycopg2 with host=None defaults to /var/run/postgresql.
@@ -1053,13 +1049,11 @@ def sandbox_manifest(
     _cfg, config_source = resolve_sandbox_config(root)
     bound_rw: list[str] = []
     bound_ro: list[str] = []
-    try:
+    with contextlib.suppress(Exception):
         for host, _container, read_only in collect_bind_mounts(root):
             (bound_ro if read_only else bound_rw).append(str(host))
         for trust_root in collect_mcp_trust_ro_overlays(root):
             bound_ro.append(str(trust_root))
-    except Exception:
-        pass
     path_dirs = (
         kart_env(
             root,
@@ -1142,8 +1136,9 @@ def _rtk_rewrite(cmd: str, config: dict) -> str:
             text=True,
             timeout=2,
             env={"PATH": os.environ.get("PATH", ""), "RTK_TELEMETRY_DISABLED": "1"},
+            check=False,
         )
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return cmd
     if result.returncode != 0:
         return cmd
@@ -1360,7 +1355,7 @@ def run_shell(
         # {"child-pid":N} once the child execs; its absence on a non-zero exit
         # means setup failed. Feature-gated so an old bwrap is unaffected.
         if _bwrap_supports_json_status():
-            status_file = tempfile.TemporaryFile(mode="w+")
+            status_file = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 — closed in the finally below; the fd must outlive this block
             fd = status_file.fileno()
             prefix = [prefix[0], "--json-status-fd", str(fd)] + prefix[1:]
             pass_fds = (fd,)
@@ -1375,7 +1370,7 @@ def run_shell(
         try:
             status_file.seek(0)
             txt = status_file.read()
-        except Exception:
+        except (OSError, ValueError):
             return None
         return "ok" if '"child-pid"' in txt else "failed"
 
@@ -1390,6 +1385,7 @@ def run_shell(
             cwd=cwd,
             pass_fds=pass_fds,
             preexec_fn=preexec_fn,
+            check=False,
         )
         elapsed = round(time.time() - started, 2)
         setup = _setup_state()
@@ -1418,7 +1414,7 @@ def run_shell(
             "error": "timeout",
             "sandbox": sandbox,
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — every failure to launch becomes a result row, never an exception out of the runner
         return {
             "returncode": -1,
             "stdout": "",
@@ -1431,10 +1427,8 @@ def run_shell(
         if cleanup is not None:
             cleanup()
         if status_file is not None:
-            try:
+            with contextlib.suppress(Exception):
                 status_file.close()
-            except Exception:
-                pass
 
 
 def clip_output(text: str, limit: int) -> str:
@@ -1505,7 +1499,7 @@ def run_shell_result_for_task(
     # KP3: attach the boundary manifest + any unreachable-path notes so a caller can
     # tell "this is empty" from "I couldn't see this." Best-effort — never fail the
     # task over manifest construction.
-    try:
+    with contextlib.suppress(Exception):
         manifest = sandbox_manifest(
             allow_net=allow_net,
             allow_localhost=allow_localhost,
@@ -1516,8 +1510,6 @@ def run_shell_result_for_task(
         if notes:
             manifest["notes"] = notes
         result["sandbox_manifest"] = manifest
-    except Exception:
-        pass
     return status, result
 
 
@@ -1534,7 +1526,7 @@ def _kart_logs_root() -> Path:
 
 def _prune_task_logs(root: Path, keep: int = KART_LOG_RETENTION) -> None:
     """Keep the newest `keep` task-log dirs; remove the rest. Best-effort."""
-    try:
+    with contextlib.suppress(Exception):
         dirs = sorted(
             (d for d in root.iterdir() if d.is_dir()),
             key=lambda d: d.stat().st_mtime,
@@ -1542,8 +1534,6 @@ def _prune_task_logs(root: Path, keep: int = KART_LOG_RETENTION) -> None:
         )
         for stale in dirs[keep:]:
             shutil.rmtree(stale, ignore_errors=True)
-    except Exception:
-        pass
 
 
 def write_task_log(
@@ -1612,5 +1602,5 @@ def write_task_log(
         )
         _prune_task_logs(log_dir.parent)
         return str(log_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 — a log that cannot be written is None; it never fails the task it describes
         return None

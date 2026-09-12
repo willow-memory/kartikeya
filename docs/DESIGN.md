@@ -84,13 +84,17 @@ loop is written against it:
 ```python
 class TaskQueue(ABC):
     @abstractmethod
-    def claim_pending(self, agent: str, limit: int) -> list[TaskRow]: ...   # atomic claim → 'running'
+    def claim_pending(
+        self, agent: str, limit: int
+    ) -> list[TaskRow]: ...  # atomic claim → 'running'
     @abstractmethod
     def mark_running(self, task_id: str) -> None: ...
     @abstractmethod
-    def mark_done(self, task_id: str, *, status: str, result: str) -> None: ...  # completed|failed + completed_at
+    def mark_done(
+        self, task_id: str, *, status: str, result: str
+    ) -> None: ...  # completed|failed + completed_at
     @abstractmethod
-    def pending_count(self) -> QueueStats: ...   # for liveness/fleet_health
+    def pending_count(self) -> QueueStats: ...  # for liveness/fleet_health
 ```
 `TaskRow` = `{task_id, task, agent, submitted_by, status}`.
 

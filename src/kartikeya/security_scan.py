@@ -18,8 +18,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 # ── Severity constants (matches pii_detect.PIIMatch.severity scale) ───────────
 SEV_LOW = 0  # log only — never blocks
@@ -256,9 +256,7 @@ def _is_destructive_rm_target(target: str) -> bool:
         return False
     if _SYSTEM_ROOT_RE.match(path):
         return True
-    if path == "/home" or path.startswith("/home/"):
-        return True
-    return False
+    return path == "/home" or path.startswith("/home/")
 
 
 def _check_destructive_rm(command: str) -> list[ScanIssue]:
@@ -492,7 +490,7 @@ _INJECTION = _compile(
 _HIDDEN_TEXT = _compile(
     [
         (
-            r"[​‌‍⁠﻿]{3,}",
+            r"[\u200b\u200c\u200d\u2060\ufeff]{3,}",
             SEV_HIGH,
             "Cluster of zero-width characters (possible hidden instructions)",
         ),

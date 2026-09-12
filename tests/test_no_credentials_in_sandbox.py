@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import sandbox  # noqa: E402
+from kartikeya import sandbox
 
 
 def _mcp_repo(base: Path) -> Path:

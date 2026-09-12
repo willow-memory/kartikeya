@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import SqliteTaskQueue, TaskRow, run_worker  # noqa: E402
-from kartikeya import execute as kexec  # noqa: E402
+from kartikeya import SqliteTaskQueue, TaskRow, run_worker
+from kartikeya import execute as kexec
 
 
 @pytest.fixture(autouse=True)

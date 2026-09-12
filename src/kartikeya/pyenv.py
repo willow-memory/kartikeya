@@ -8,6 +8,7 @@ pick the interpreter for tasks. Falls back to the running interpreter.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -55,10 +56,8 @@ def venv_candidates(root: Path | None = None) -> list[Path]:
         raw = raw.strip()
         if raw:
             candidates.append(Path(raw).expanduser())
-    try:
+    with contextlib.suppress(Exception):
         candidates.append(willow_home(root) / "venv")
-    except Exception:
-        pass
     candidates.extend(
         [
             willow_home_alias() / "venv",

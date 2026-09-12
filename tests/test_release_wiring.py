@@ -329,6 +329,7 @@ def _run_tool(tool: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         cwd=str(tool.parents[1]),
+        check=False,
     )
 
 

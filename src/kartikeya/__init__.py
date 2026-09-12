@@ -28,30 +28,30 @@ from .queue import QueueStats, SqliteTaskQueue, TaskQueue, TaskRow
 from .task_scan import check_kart_task
 from .worker import run_worker
 
-
 # Read from installed package metadata rather than hardcoded here. The literal
 # this replaces had drifted to 0.0.4 while pyproject.toml said 0.0.7 — three
 # releases stale, and exported in __all__, so anything introspecting
 # kartikeya.__version__ was told the wrong thing. Metadata cannot drift: it is
 # written at build time from the git tag.
 try:
-    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
 
     __version__ = _pkg_version("kartikeya")
 except PackageNotFoundError:  # running from a source tree with no install
     __version__ = "0.0.0+unknown"
 
 __all__ = [
-    "TaskQueue",
-    "TaskRow",
+    "NetworkAuthorizer",
     "QueueStats",
     "SqliteTaskQueue",
-    "lanes",
-    "check_kart_task",
-    "run_shell_task",
-    "NetworkAuthorizer",
-    "execute_task_row",
-    "drain_claimed_tasks",
-    "run_worker",
+    "TaskQueue",
+    "TaskRow",
     "__version__",
+    "check_kart_task",
+    "drain_claimed_tasks",
+    "execute_task_row",
+    "lanes",
+    "run_shell_task",
+    "run_worker",
 ]

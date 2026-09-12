@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import sandbox, task_scan  # noqa: E402
+from kartikeya import sandbox, task_scan
 
 RO_ROOT = "/srv/product"  # the read-only WILLOW_ROOT shape
 RW_REPO = "/srv/org/other-repo"  # a checkout bound read-write by a parent entry
@@ -34,9 +34,10 @@ def policy(monkeypatch):
     def read_only(path):
         best, best_len = None, -1
         for prefix, ro in table.items():
-            if path == prefix or path.startswith(prefix + "/"):
-                if len(prefix) > best_len:
-                    best, best_len = ro, len(prefix)
+            if (path == prefix or path.startswith(prefix + "/")) and len(
+                prefix
+            ) > best_len:
+                best, best_len = ro, len(prefix)
         return best
 
     monkeypatch.setattr(task_scan, "_dir_read_only", read_only)
