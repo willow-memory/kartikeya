@@ -22,6 +22,20 @@ That is the command CI runs, verbatim. Quote it and its result (the
 `N passed` line) in the pull request, so the PR carries a receipt rather than
 a claim.
 
+## Lint
+
+CI's lint job runs ruff at an exact release, and the tree must be clean under
+it. The same release, so a local pass means a green job:
+
+```sh
+pip install ruff==0.16.7
+ruff check .
+ruff format --check .
+```
+
+`tools/changelog_dedup.py` is excluded on purpose: it is vendored from Forge
+and pinned byte-for-byte, so it is formatted upstream, never here.
+
 ## The Idea-Id commit-trailer convention
 
 A commit that lands an idea recorded in docs/ideas.md carries an

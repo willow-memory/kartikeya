@@ -1,10 +1,23 @@
 name: Tests
 
+# The fleet CI floor (fleet plan decision 5): a Linux matrix over every Python
+# the package claims to support, the same range's floor and ceiling on
+# Windows, a lint job under a pinned ruff, and one aggregate gate that fails
+# unless every leg succeeded. tests/test_release_wiring.py holds each part to
+# the tree — the matrix to pyproject's classifiers, the ruff pin to an exact
+# release, the gate to naming every leg and refusing a skip — with a planted
+# violation for each, so this file cannot quietly drift from what it claims.
+
 on:
   push:
     branches: ["master", "main"]
   pull_request:
     branches: ["master", "main"]
+
+# Every job here only reads the checkout. An absent block means the
+# repository's default token grant, which may be write (docs/ideas.md item 20).
+permissions:
+  contents: read
 
 jobs:
   test-matrix:
@@ -14,6 +27,9 @@ jobs:
       # matrix is seeing which versions fail, not just that one did.
       fail-fast: false
       matrix:
+        # Derived from pyproject.toml's `Programming Language :: Python :: 3.X`
+        # classifiers, every listed minor. A classifier without a leg here, or
+        # a leg without a classifier, is a red test, not a silent drift.
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
@@ -35,12 +51,59 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
+  test-windows:
+    # The floor and the ceiling of the same classifier range, on Windows. The
+    # package declares POSIX :: Linux — the sandbox is bubblewrap and there is
+    # none here — so this leg exercises everything that is portable (the
+    # queue, the scans, the release wiring, the meta-scan) and catches the
+    # path-separator, tempfile and line-ending assumptions that only a second
+    # platform ever surfaces.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e "." pytest pyyaml
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install ruff, pinned
+        # An exact pin, not a floor: a new ruff release adds rules and moves
+        # the formatter, and either would turn this job red on a tree nobody
+        # changed. Bumping the pin is a commit that says so, and the tree is
+        # made clean under the new release in the same PR.
+        run: pip install ruff==0.16.7
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
   # Aggregate gate: branch protection requires a single check named exactly
   # "test" across the whole fleet, so the ruleset never has to name a matrix
   # cell. Pinning a cell name means the required check silently stops
   # reporting the moment the matrix is re-shaped. Green only when every leg is.
   test:
-    needs: [test-matrix]
+    needs: [test-matrix, test-windows, lint]
     # `if: always()` is load-bearing, not boilerplate. Without it a failing
     # dependency does not fail this job — it SKIPS it, because that is what
     # `needs:` means. GitHub does not treat a skipped required check as a
@@ -49,16 +112,26 @@ jobs:
     # suite underneath it. Observed directly on willows-grove#5: `test-suite`
     # failed, `test` reported `skipping`, and the PR read MERGEABLE.
     #
-    # So the result is asserted explicitly rather than inferred from this job
-    # having run at all. Same shape as homestead/ci.yml and willow-mcp.
+    # So each result is asserted explicitly, one step per leg, rather than
+    # inferred from this job having run at all. `skipped` and `cancelled`
+    # count as failures: a leg that did not run has told us nothing, and this
+    # gate speaks for all of them. Same shape as homestead/ci.yml and willow-mcp.
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Assert every matrix leg actually succeeded
-        # skipped and cancelled count as failures: a leg that did not run has
-        # told us nothing, and this gate speaks for all of them.
+      - name: Assert the Linux matrix succeeded
         if: ${{ needs.test-matrix.result != 'success' }}
         run: |
           echo "::error::test-matrix did not succeed (result: ${{ needs.test-matrix.result }})"
           exit 1
-      - run: echo "all matrix legs green"
+      - name: Assert the Windows legs succeeded
+        if: ${{ needs.test-windows.result != 'success' }}
+        run: |
+          echo "::error::test-windows did not succeed (result: ${{ needs.test-windows.result }})"
+          exit 1
+      - name: Assert lint succeeded
+        if: ${{ needs.lint.result != 'success' }}
+        run: |
+          echo "::error::lint did not succeed (result: ${{ needs.lint.result }})"
+          exit 1
+      - run: echo "all legs green"
