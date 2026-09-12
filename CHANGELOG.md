@@ -31,6 +31,14 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.2.5](https://github.com/willow-memory/kartikeya/compare/v0.2.4...v0.2.5) (2026-09-12)
+
+
+### Fixed
+
+* judge bind coverage by path components, not a "/"-joined string prefix ([1e6b9fb](https://github.com/willow-memory/kartikeya/commit/1e6b9fb82fbfd76751869e3363b45d27714ced9a))
+* run on a host with no POSIX uid, no /bin/bash, and non-POSIX path joins ([80b8a3d](https://github.com/willow-memory/kartikeya/commit/80b8a3db976cc9711b883cdf11e8d2fe896796cf))
+
 ## [0.2.4](https://github.com/willow-memory/kartikeya/compare/v0.2.3...v0.2.4) (2026-09-11)
 
 
