@@ -22,6 +22,19 @@ That is the command CI runs, verbatim. Quote it and its result (the
 `N passed` line) in the pull request, so the PR carries a receipt rather than
 a claim.
 
+## The Idea-Id commit-trailer convention
+
+A commit that lands an idea recorded in docs/ideas.md carries an
+`Idea-Id: <corpus>-ideas-<num>` git trailer (add `Idea-Status: partial` when a
+commit only partly lands it). It is the durable join key willow-reconciler
+reads; a wrong id is worse than no id, so never type one by hand:
+
+    reconciler id --repo ./ --doc docs/ideas.md --grep "words from the item"
+    reconciler install-hook --repo ./        # derives it from a branch named idea-NN
+
+`.github/workflows/trailers.yml` runs `reconciler verify` on every PR and fails
+on a trailer that names an item the doc does not contain.
+
 ## Commits and releases
 
 Commit subjects follow Conventional Commits. `docs:`, `test:`, `ci:` and
