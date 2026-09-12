@@ -11,10 +11,11 @@ still 0.0.7, the build produced 0.0.7, and the only thing that noticed was PyPI
 refusing a duplicate upload.
 
 Ported from willow-mcp, where a config mistake would have tagged
-`willow-mcp-v2.2.0` while the publish workflow listened for `v*`. Three checks
+`willow-mcp-v2.2.0` while the publish workflow listened for `v*`. Two checks
 there do not apply here and are deliberately absent rather than copied:
-kartikeya has no second version file to keep in step and no aggregate CI job to
-name.
+kartikeya has no second version file to keep in step. The aggregate CI job it
+does have — `test`, the one check branch protection names — is held to the
+same standard at the bottom of this file, with the rest of the CI floor.
 """
 
 from __future__ import annotations
@@ -611,3 +612,237 @@ def test_the_checkout_uses_a_non_suppressed_credential_so_pushes_are_not_gated()
         f"Got: {token!r}"
     )
     assert "GITHUB_TOKEN" not in token
+
+
+# ── the CI floor (fleet plan decision 5) ────────────────────────────────────
+#
+# tests.yml makes four claims that nothing at runtime checks: that its Linux
+# matrix is the set of Pythons pyproject says the package supports; that the
+# Windows job runs that range's floor and ceiling; that lint runs ruff at an
+# exact release; and that the aggregate `test` job — the one check branch
+# protection names — needs every leg and fails when any of them did not
+# succeed. Each of the four drifts silently: a classifier added without a leg
+# is a claimed Python never tested, an unpinned ruff is a job that goes red on
+# a tree nobody changed, and a gate that lacks `if: always()` or checks
+# `== 'failure'` is one that SKIPS (and so passes) when a leg fails or is
+# cancelled. Observed on willows-grove#5: `test-suite` failed, `test` reported
+# `skipping`, and the PR read MERGEABLE.
+
+_TESTS_WF = _REPO / ".github" / "workflows" / "tests.yml"
+_PYPROJECT = _REPO / "pyproject.toml"
+_CONTRIBUTING = _REPO / "CONTRIBUTING.md"
+#: The check branch protection requires, by exact name, fleet-wide.
+_GATE = "test"
+_CLASSIFIER_RE = re.compile(r"^Programming Language :: Python :: (3\.\d+)$")
+#: An exact pin and nothing looser: `ruff==0.16.7`, not `ruff`, `ruff>=…`
+#: or `ruff~=…`.
+_RUFF_PIN_RE = re.compile(r"(?<![\w.=<>~!])ruff==(\d+\.\d+\.\d+)(?![\w.])")
+
+
+def _minor(version: str) -> tuple[int, int]:
+    major, minor = version.split(".")
+    return int(major), int(minor)
+
+
+def _supported_pythons(pyproject_text: str) -> list[str]:
+    """The Python minors pyproject's classifiers claim, ascending. The bare
+    `Programming Language :: Python :: 3` says nothing about a version and is
+    not one; neither is any other classifier."""
+    classifiers = tomllib.loads(pyproject_text)["project"].get("classifiers") or []
+    found = [m.group(1) for c in classifiers if (m := _CLASSIFIER_RE.match(c))]
+    return sorted(found, key=_minor)
+
+
+def _matrix_pythons(workflow: dict, job: str) -> list[str]:
+    """The `python-version` axis of one job's matrix, as strings, ascending.
+    Strings because YAML reads an unquoted `3.10` as the float 3.1."""
+    strategy = (workflow.get("jobs") or {}).get(job, {}).get("strategy") or {}
+    axis = (strategy.get("matrix") or {}).get("python-version") or []
+    return sorted((str(v) for v in axis), key=_minor)
+
+
+def _ruff_pin(workflow: dict) -> str | None:
+    """The exact ruff release the lint job installs, or None when ruff is
+    installed unpinned, floored, or not at all."""
+    steps = (workflow.get("jobs") or {}).get("lint", {}).get("steps") or []
+    runs = "\n".join(str(s.get("run", "")) for s in steps)
+    match = _RUFF_PIN_RE.search(runs)
+    return match.group(1) if match else None
+
+
+def _lint_runs(workflow: dict) -> list[str]:
+    """The ruff commands the lint job runs, in order."""
+    steps = (workflow.get("jobs") or {}).get("lint", {}).get("steps") or []
+    return [
+        line.strip()
+        for s in steps
+        for line in str(s.get("run", "")).splitlines()
+        if line.strip().startswith("ruff ")
+    ]
+
+
+def _aggregate_gate_defects(workflow: dict, gate: str = _GATE) -> list[str]:
+    """Everything the aggregate job gets wrong, as readable defects; empty
+    when it needs every other job, runs `if: always()`, and has a step that
+    fails on each needed job's result being anything but `success`."""
+    jobs = workflow.get("jobs") or {}
+    job = jobs.get(gate)
+    if job is None:
+        return [f"no job named `{gate}`: branch protection requires that exact name"]
+    defects: list[str] = []
+    needs = job.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    for leg in jobs:
+        if leg != gate and leg not in needs:
+            defects.append(
+                f"`{leg}` is not in `{gate}`'s needs: its result cannot gate"
+            )
+    if str(job.get("if", "")).strip() != "always()":
+        defects.append(
+            f"`{gate}` does not run `if: always()`: a failed leg skips it, and a "
+            "skipped required check does not block a merge"
+        )
+    conditions = [str(s.get("if", "")) for s in (job.get("steps") or [])]
+    for leg in needs:
+        wanted = f"needs.{leg}.result != 'success'"
+        if not any(wanted in c for c in conditions):
+            defects.append(
+                f"no step fails on `{wanted}`: a skipped or cancelled `{leg}` "
+                "would pass the gate"
+            )
+    return defects
+
+
+def test_the_linux_matrix_is_exactly_the_pythons_pyproject_claims():
+    """Both sides derived, neither restated: the classifiers are what PyPI
+    shows and pip trusts, and the matrix is what is actually run. A version
+    in one and not the other is a claim nobody tests, or a test of a version
+    nobody claims."""
+    claimed = _supported_pythons(_PYPROJECT.read_text(encoding="utf-8"))
+    assert claimed, "pyproject.toml names no `Programming Language :: Python :: 3.X`"
+    assert _matrix_pythons(_yaml(_TESTS_WF), "test-matrix") == claimed
+
+
+def test_the_windows_job_runs_the_floor_and_the_ceiling_of_the_same_range():
+    """Two legs, the oldest and newest claimed Python: enough to see a
+    platform assumption on both ends without doubling the matrix. It must
+    not install bubblewrap — there is none — and must run the same command
+    as the Linux legs, so a test that passes only under a Linux-only setup
+    step is caught rather than hidden by a different invocation."""
+    claimed = _supported_pythons(_PYPROJECT.read_text(encoding="utf-8"))
+    workflow = _yaml(_TESTS_WF)
+    assert _matrix_pythons(workflow, "test-windows") == [claimed[0], claimed[-1]]
+    job = workflow["jobs"]["test-windows"]
+    assert str(job.get("runs-on", "")).startswith("windows"), job.get("runs-on")
+    runs = [str(s.get("run", "")) for s in job["steps"]]
+    assert not any("bubblewrap" in r or "apt-get" in r for r in runs)
+    assert "python -m pytest tests/ -q" in runs, "not the command CONTRIBUTING names"
+
+
+def test_the_lint_job_pins_ruff_exactly_and_contributing_names_the_same_release():
+    """A floor (`ruff>=`) turns the job red the day ruff adds a rule to a
+    tree nobody changed; an exact pin makes a ruff bump a commit that says
+    so. CONTRIBUTING names the release too, so a local `ruff check` is the
+    same check CI runs — and two places naming one version is the kind of
+    pair this file exists to keep equal."""
+    workflow = _yaml(_TESTS_WF)
+    pin = _ruff_pin(workflow)
+    assert pin is not None, "lint installs ruff unpinned, floored, or not at all"
+    assert _lint_runs(workflow) == ["ruff check .", "ruff format --check ."]
+    contributing = _CONTRIBUTING.read_text(encoding="utf-8")
+    documented = {m.group(1) for m in _RUFF_PIN_RE.finditer(contributing)}
+    assert documented == {pin}, (
+        f"tests.yml pins ruff=={pin}; CONTRIBUTING.md names {sorted(documented)}"
+    )
+
+
+def test_the_aggregate_gate_needs_every_leg_and_refuses_anything_but_success():
+    """The job branch protection names must be the only thing it needs to
+    name, which means it must speak for every leg, and speak `failure` for a
+    skip or a cancel as much as for a red run."""
+    assert _aggregate_gate_defects(_yaml(_TESTS_WF)) == []
+
+
+def test_the_floor_checks_catch_a_planted_drift_in_each_of_the_four_claims():
+    """Planted: a pyproject whose classifiers include the bare `3` and a
+    non-Python classifier (neither counts), read against a workflow whose
+    matrix dropped a claimed version; a lint job that installs ruff
+    unpinned, then floored, then pinned; and a gate that forgot a leg,
+    lacks `if: always()`, and checks `== 'failure'` — the exact shape that
+    passes on a skip. Every defect is named, and a correctly wired workflow
+    reports none."""
+    pyproject = (
+        "[project]\nname = 'x'\nclassifiers = [\n"
+        "  'Operating System :: POSIX :: Linux',\n"
+        "  'Programming Language :: Python :: 3',\n"
+        "  'Programming Language :: Python :: 3.13',\n"
+        "  'Programming Language :: Python :: 3.11',\n"
+        "  'Programming Language :: Python :: 3.12',\n"
+        "]\n"
+    )
+    assert _supported_pythons(pyproject) == ["3.11", "3.12", "3.13"]
+    assert _supported_pythons("[project]\nname = 'x'\n") == []
+
+    drifted = yaml.safe_load(
+        "jobs:\n"
+        "  test-matrix:\n    strategy:\n      matrix:\n"
+        "        python-version: ['3.12', '3.11']\n"
+        "  test-windows:\n    strategy:\n      matrix:\n"
+        "        python-version: [3.13]\n"
+        "  lint:\n    steps:\n      - run: pip install ruff\n      - run: ruff check .\n"
+        "  test:\n    needs: [test-matrix, lint]\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - if: ${{ needs.test-matrix.result == 'failure' }}\n        run: exit 1\n"
+        "      - if: ${{ needs.lint.result != 'success' }}\n        run: exit 1\n"
+    )
+    assert (
+        _matrix_pythons(drifted, "test-matrix")
+        == ["3.11", "3.12"]
+        != [
+            "3.11",
+            "3.12",
+            "3.13",
+        ]
+    )
+    assert _matrix_pythons(drifted, "test-windows") == ["3.13"], (
+        "an unquoted 3.13 arrives as a float and must still read as the version"
+    )
+    assert _ruff_pin(drifted) is None
+    assert (
+        _ruff_pin({"jobs": {"lint": {"steps": [{"run": "pip install ruff>=0.16"}]}}})
+        is None
+    )
+    assert (
+        _ruff_pin({"jobs": {"lint": {"steps": [{"run": "pip install ruff~=0.16.7"}]}}})
+        is None
+    )
+    assert (
+        _ruff_pin({"jobs": {"lint": {"steps": [{"run": "pip install ruff==0.16.7"}]}}})
+        == "0.16.7"
+    )
+    assert _lint_runs(drifted) == ["ruff check ."]
+    assert _aggregate_gate_defects(drifted) == [
+        "`test-windows` is not in `test`'s needs: its result cannot gate",
+        (
+            "`test` does not run `if: always()`: a failed leg skips it, and a "
+            "skipped required check does not block a merge"
+        ),
+        (
+            "no step fails on `needs.test-matrix.result != 'success'`: a skipped or "
+            "cancelled `test-matrix` would pass the gate"
+        ),
+    ]
+    assert _aggregate_gate_defects({"jobs": {"lint": {}}}) == [
+        "no job named `test`: branch protection requires that exact name"
+    ]
+
+    wired = yaml.safe_load(
+        "jobs:\n"
+        "  a:\n    steps: []\n"
+        "  b:\n    steps: []\n"
+        "  test:\n    needs: [a, b]\n    if: always()\n"
+        "    steps:\n"
+        "      - if: ${{ needs.a.result != 'success' }}\n        run: exit 1\n"
+        "      - if: ${{ needs.b.result != 'success' }}\n        run: exit 1\n"
+    )
+    assert _aggregate_gate_defects(wired) == []
