@@ -18,9 +18,13 @@ name.
 """
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import re
+import shutil
+import subprocess
+import sys
 import tomllib  # stdlib from 3.11; this package requires >=3.11
 from pathlib import Path
 
@@ -31,6 +35,8 @@ yaml = pytest.importorskip("yaml", reason="PyYAML needed to read the workflows")
 _REPO = Path(__file__).resolve().parents[1]
 _CONFIG = _REPO / "release-please-config.json"
 _MANIFEST = _REPO / ".release-please-manifest.json"
+_CHANGELOG = _REPO / "CHANGELOG.md"
+_TOOL = _REPO / "tools" / "changelog_dedup.py"
 _RELEASE_WF = _REPO / ".github" / "workflows" / "release.yml"
 _RP_WF = _REPO / ".github" / "workflows" / "release-please.yml"
 
@@ -99,6 +105,20 @@ def _names_a_non_suppressed_credential(value: object) -> bool:
     return any(c in text for c in NON_SUPPRESSED_CREDENTIALS)
 
 
+def test_the_credential_scan_catches_a_planted_bot_token():
+    """Planted: the scan above had never been shown to fire. It is the whole
+    enforcement of "no GITHUB_TOKEN in the release job", and until this test
+    every caller handed it a value that happened to pass. A bot token in
+    either spelling must come back False, and each accepted credential True,
+    whether it arrives as a string or as a whole `env:` mapping."""
+    assert not _names_a_non_suppressed_credential("${{ secrets.GITHUB_TOKEN }}")
+    assert not _names_a_non_suppressed_credential({"GH_TOKEN": "${{ github.token }}"})
+    assert _names_a_non_suppressed_credential("${{ secrets.RELEASE_PLEASE_TOKEN }}")
+    assert _names_a_non_suppressed_credential(
+        {"GH_TOKEN": "${{ steps.app-token.outputs.token }}"}
+    )
+
+
 def test_release_automation_uses_a_non_suppressed_credential_everywhere():
     """A bot token silently produces no workflow runs: the release PR merges, no
     tag workflow fires, nothing publishes. jeles lost three releases to it."""
@@ -133,10 +153,14 @@ def test_the_changelog_is_rebuilt_before_auto_merge_is_armed():
     """Order is the point: the correction must land on the release PR *before*
     auto-merge can take it, or the release ships wrong and is fixed afterwards.
 
-    **Not yet exercised here.** This repo has no CHANGELOG.md and no
-    `chore(master): release` commit in its history, so release-please has never
-    cut a release and the tool no-ops. The wiring is asserted; the correction is
-    not, because there is nothing here to correct yet."""
+    When this was written (2026-08-04) this repo had no CHANGELOG.md and no
+    `chore(master): release` commit, so the step no-opped and only the wiring
+    could be asserted. As of 2026-09-12 it has run for real on every release
+    PR since 0.0.10 (2026-08-05): CHANGELOG.md carries a generated
+    `## [x.y.z](…/compare/…)` section per release above the hand-written
+    history, and `git log --grep="chore(master): release"` shows the trail.
+    The wiring is still what this test asserts; the correction itself is
+    exercised by the tool's own tests and by each release PR."""
     steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
     names = [s.get("name") or str(s.get("uses", "")) for s in steps]
 
@@ -165,8 +189,31 @@ def test_a_changelog_bail_does_not_block_the_release():
     assert 'status" = "2"' in step["run"], "exit 2 must be handled, not left to set -e"
     assert _names_a_non_suppressed_credential(step.get("env"))
     assert "GITHUB_TOKEN" not in str(step.get("env"))
-    assert (_REPO / "tools" / "changelog_dedup.py").exists(), \
-        "the workflow calls a script this repo does not ship"
+    assert _TOOL.exists(), "the workflow calls a script this repo does not ship"
+
+
+def _packaged_paths_declared_in(embedded_python: str) -> tuple:
+    """The `PACKAGED = (...)` literal in the pr-title check's embedded script,
+    read out of the AST. Comments in that script name the other repos' paths
+    on purpose, so this is a parse, not a search."""
+    for node in ast.walk(ast.parse(embedded_python)):
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "PACKAGED":
+            return ast.literal_eval(node.value)
+    raise AssertionError("the pr-title check no longer assigns PACKAGED")
+
+
+def test_the_packaged_path_parse_catches_a_planted_wrong_path():
+    """Planted: a script whose comment names the *right* path and whose
+    assignment names a sibling repo's. The parse returns the assignment —
+    the value that would actually gate releases — and a substring search
+    over the same text would have been satisfied by the comment."""
+    script = (
+        "# kartikeya packages src/kartikeya/ and pyproject.toml\n"
+        "PACKAGED = ('src/willow_mcp/', 'pyproject.toml')\n"
+    )
+    assert _packaged_paths_declared_in(script) == ("src/willow_mcp/", "pyproject.toml")
+    with pytest.raises(AssertionError):
+        _packaged_paths_declared_in("# nothing assigned here\nOTHER = 1\n")
 
 
 def test_the_pr_title_check_guards_both_directions():
@@ -179,14 +226,9 @@ def test_the_pr_title_check_guards_both_directions():
     `jeles/`. Read the *assigned value* out of the AST rather than searching the
     text: the comments there name the other repos' paths deliberately, and a
     substring check would flag its own explanation."""
-    import ast
-
     wf = _REPO / ".github" / "workflows" / "pr-title.yml"
     body = _yaml(wf)["jobs"]["title"]["steps"][-1]["run"].split("<<'PY'")[1].rsplit("PY", 1)[0]
-    tree = ast.parse(body)
-    packaged = next(ast.literal_eval(n.value) for n in ast.walk(tree)
-                    if isinstance(n, ast.Assign)
-                    and getattr(n.targets[0], "id", "") == "PACKAGED")
+    packaged = _packaged_paths_declared_in(body)
 
     assert packaged == ("src/kartikeya/", "pyproject.toml"), packaged
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
@@ -201,8 +243,10 @@ def test_the_release_body_is_synced_after_the_release_is_created():
     willow-mcp's v2.1.4 page and jeles' v0.5.0 page both kept their duplicate
     after the file had been corrected.
 
-    Like the changelog step, this has never run here — there is no CHANGELOG.md
-    to publish from. The wiring is what is asserted."""
+    Like the changelog step, this had never run here when it was written
+    (2026-08-04): there was no CHANGELOG.md to publish from. As of 2026-09-12
+    there is, and the step has run on every release since 0.0.10. The wiring
+    is what this test asserts."""
     steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
     names = [s.get("name") or str(s.get("uses", "")) for s in steps]
 
@@ -224,70 +268,112 @@ def test_the_release_body_is_synced_after_the_release_is_created():
     assert "GITHUB_TOKEN" not in str(step.get("env"))
 
 
-def test_print_section_refuses_when_there_is_no_changelog():
-    """The ordering trap this repo uniquely has. `--print-section`'s stdout
-    becomes a GitHub Release body, so falling through the "no CHANGELOG.md yet —
-    nothing to rebuild" early return would publish that sentence as the release
-    notes. It must exit non-zero instead, and the workflow then warns and leaves
-    the release alone."""
-    import subprocess
-    import sys
+# ── the tool's two pre-release states, staged rather than skipped ────────────
+#
+# The three tests below used to run against the repo's own CHANGELOG.md and
+# skip once it had moved past the state they guard. It did: the file was
+# backfilled on 2026-08-04 and release-please wrote its first section the next
+# day, so from then on all three skipped on every run — a guard that can never
+# fire has stopped guarding. They now stage the state instead: the real
+# `tools/changelog_dedup.py`, copied byte-for-byte into a `tmp_path` repo root
+# (its `REPO` is `parents[1]` of its own file, so the copy resolves its
+# CHANGELOG and config beside itself), with the changelog in whichever state
+# the test is about. Neither state reaches `git`: both refusals happen before
+# the tool reads a single commit, which is what makes them safe to stage.
 
-    tool = _REPO / "tools" / "changelog_dedup.py"
-    if (_REPO / "CHANGELOG.md").exists():
-        pytest.skip("a changelog exists now — this guards the no-changelog state")
-    r = subprocess.run([sys.executable, str(tool), "--print-section", "0.0.9"],
-                       capture_output=True, text=True, cwd=str(_REPO))
+
+def _staged_tool(tmp_path: Path, changelog: str | None) -> Path:
+    """The real changelog tool in a staged repo root, with `changelog` as its
+    CHANGELOG.md — or no CHANGELOG.md at all when None."""
+    (tmp_path / "tools").mkdir()
+    tool = tmp_path / "tools" / _TOOL.name
+    shutil.copyfile(_TOOL, tool)
+    shutil.copyfile(_CONFIG, tmp_path / _CONFIG.name)
+    if changelog is not None:
+        (tmp_path / _CHANGELOG.name).write_text(changelog)
+    return tool
+
+
+def _run_tool(tool: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(tool), *args],
+                          capture_output=True, text=True, cwd=str(tool.parents[1]))
+
+
+def _without_generated_sections(changelog: str) -> str:
+    """The real CHANGELOG.md with every release-please section removed: the
+    prose header, then the hand-written `## 0.0.9 — date` history. Generated
+    sections start `## [` and end at the next `## ` heading of either kind —
+    the same rule the tool uses to tell the two apart."""
+    kept: list[str] = []
+    dropping = False
+    for line in changelog.splitlines():
+        if line.startswith("## "):
+            dropping = line.startswith("## [")
+        if not dropping:
+            kept.append(line)
+    return "\n".join(kept) + "\n"
+
+
+def _hand_written_history_only() -> str:
+    """This repo's changelog as it stood between the backfill and the first
+    release: real header, real hand-written sections, nothing generated."""
+    staged = _without_generated_sections(_CHANGELOG.read_text())
+    headings = [ln for ln in staged.splitlines() if ln.startswith("## ")]
+    assert headings, "the staged changelog lost the hand-written history"
+    assert not [h for h in headings if h.startswith("## [")], (
+        "a generated section survived the staging"
+    )
+    return staged
+
+
+def test_print_section_refuses_when_there_is_no_changelog(tmp_path):
+    """The ordering trap this repo uniquely had. `--print-section`'s stdout
+    becomes a GitHub Release body, so falling through the "no CHANGELOG.md yet
+    — nothing to rebuild" early return would publish that sentence as the
+    release notes. It must exit non-zero with an empty stdout instead, and the
+    workflow then warns and leaves the release alone. A plain rebuild in the
+    same state is the clean no-op the same early return exists for."""
+    tool = _staged_tool(tmp_path, None)
+    assert not (tmp_path / _CHANGELOG.name).exists()
+
+    r = _run_tool(tool, "--print-section", "0.0.9")
     assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
     assert r.stdout.strip() == "", f"printed something usable as a body: {r.stdout!r}"
 
+    r = _run_tool(tool)
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert not (tmp_path / _CHANGELOG.name).exists(), "a rebuild invented a changelog"
 
-def test_print_section_refuses_while_only_hand_written_history_exists():
-    """The live successor to the no-CHANGELOG guard, and the same hazard.
 
-    CHANGELOG.md now exists but contains only the hand-written v0.0.1-v0.0.9
-    history, backfilled because those tags predate release-please. Those
-    sections deliberately carry no `(…/compare/…)` link, which is how the tool
-    tells generated sections from written ones.
+def test_print_section_refuses_while_only_hand_written_history_exists(tmp_path):
+    """The successor to the no-CHANGELOG guard, and the same hazard.
 
-    `--print-section`'s stdout becomes a GitHub Release body, so this must exit
-    non-zero with an empty stdout rather than printing an explanatory sentence
-    that would be published as release notes."""
-    import subprocess
-    import sys
+    Between the backfill and the first release, CHANGELOG.md held only the
+    hand-written v0.0.1-v0.0.9 history. Those sections deliberately carry no
+    `(…/compare/…)` link, which is how the tool tells generated sections from
+    written ones — so there is no section for `--print-section` to publish,
+    and its stdout must stay empty rather than carry an explanatory sentence
+    that would become release notes. Staged from the real file with its
+    generated sections removed."""
+    tool = _staged_tool(tmp_path, _hand_written_history_only())
 
-    changelog = _REPO / "CHANGELOG.md"
-    if not changelog.exists():
-        pytest.skip("no changelog — the earlier guard covers that state")
-    generated = [ln for ln in changelog.read_text().splitlines()
-                 if ln.startswith("## [")]
-    if generated:
-        pytest.skip("release-please has written a section — this guard is spent")
-
-    r = subprocess.run([sys.executable, str(_REPO / "tools" / "changelog_dedup.py"),
-                        "--print-section", "0.0.9"],
-                       capture_output=True, text=True, cwd=str(_REPO))
+    r = _run_tool(tool, "--print-section", "0.0.9")
     assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
     assert r.stdout.strip() == "", f"printed something publishable: {r.stdout!r}"
 
 
-def test_a_rebuild_leaves_the_hand_written_history_alone():
-    """The claim the changelog header makes about this tool, checked rather than
-    asserted: with no generated section present there is nothing to rebuild, and
-    that is a clean no-op — not an error, and not a rewrite of the history."""
-    import subprocess
-    import sys
+def test_a_rebuild_leaves_the_hand_written_history_alone(tmp_path):
+    """The claim the changelog header makes about this tool, checked rather
+    than asserted: with no generated section present there is nothing to
+    rebuild, and that is a clean no-op — not an error, and not a rewrite of
+    the history."""
+    staged = _hand_written_history_only()
+    tool = _staged_tool(tmp_path, staged)
 
-    changelog = _REPO / "CHANGELOG.md"
-    if not changelog.exists() or [ln for ln in changelog.read_text().splitlines()
-                                  if ln.startswith("## [")]:
-        pytest.skip("only meaningful while the file is hand-written history alone")
-
-    before = changelog.read_text()
-    r = subprocess.run([sys.executable, str(_REPO / "tools" / "changelog_dedup.py")],
-                       capture_output=True, text=True, cwd=str(_REPO))
+    r = _run_tool(tool)
     assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
-    assert changelog.read_text() == before, "the hand-written history was modified"
+    assert (tmp_path / _CHANGELOG.name).read_text() == staged, \
+        "the hand-written history was modified"
 
 
 def test_only_types_that_change_the_installed_package_cut_a_release():
