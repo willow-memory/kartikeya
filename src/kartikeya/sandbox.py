@@ -375,6 +375,14 @@ def work_root_read_only(root: Path | None = None) -> bool:
     return "{{WILLOW_ROOT}}" in ro and "{{WILLOW_ROOT}}" not in rw
 
 
+def _same_or_under(path: str, parent: str) -> bool:
+    """`path` is `parent` or inside it, judged by path components. Not by a
+    string prefix joined with "/": that is wrong wherever the separator is
+    not "/", and both callers compare resolved host paths."""
+    p, q = Path(path), Path(parent)
+    return p == q or q in p.parents
+
+
 def path_read_only_in_policy(path: str | Path, root: Path | None = None) -> bool | None:
     """How the resolved mount policy binds ``path``: True read-only, False
     read-write, None when no bind covers it at all.
@@ -394,8 +402,8 @@ def path_read_only_in_policy(path: str | Path, root: Path | None = None) -> bool
     best: bool | None = None
     best_len = -1
     for host, _container, ro in collect_bind_mounts(root):
-        h = str(host).rstrip("/") or "/"
-        if (target == h or target.startswith(h + "/")) and len(h) > best_len:
+        h = str(host)
+        if _same_or_under(target, h) and len(h) > best_len:
             best, best_len = ro, len(h)
     return best
 
@@ -524,7 +532,7 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
         covering = [
             k
             for k, (_h, _c, ro) in mounts.items()
-            if not ro and (k == ikey or ikey.startswith(k.rstrip("/") + "/"))
+            if not ro and _same_or_under(ikey, k)
         ]
         if covering:
             _log.warning(

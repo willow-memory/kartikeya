@@ -288,7 +288,8 @@ def test_build_bwrap_argv_db_socket_only_when_allow_db(monkeypatch, vendored_def
     real_exists = sandbox.Path.exists
 
     def exists(self):
-        if str(self) == "/var/run/postgresql":
+        # as_posix, not str: on Windows str() of this Path is backslashed.
+        if self.as_posix() == "/var/run/postgresql":
             return True
         return real_exists(self)
 
@@ -578,11 +579,13 @@ def test_bash_lookup_skips_the_system_directory_and_takes_the_next_one(tmp_path)
     with no system directory to skip, the first entry wins as usual."""
     system = tmp_path / "Windows" / "System32"
     git = tmp_path / "Git" / "bin"
+    # shutil.which on Windows finds `bash` only through a PATHEXT extension.
+    name = "bash.exe" if os.name == "nt" else "bash"
     for d in (system, git):
         d.mkdir(parents=True)
-        (d / "bash").write_text("#!/bin/sh\n")
-        (d / "bash").chmod(0o755)
+        (d / name).write_text("#!/bin/sh\n")
+        (d / name).chmod(0o755)
     path = os.pathsep.join([str(system), str(git)])
-    assert sandbox._bash_outside(path, str(tmp_path / "Windows")) == str(git / "bash")
+    assert sandbox._bash_outside(path, str(tmp_path / "Windows")) == str(git / name)
     assert sandbox._bash_outside(str(system), str(tmp_path / "Windows")) is None
-    assert sandbox._bash_outside(path, None) == str(system / "bash")
+    assert sandbox._bash_outside(path, None) == str(system / name)
