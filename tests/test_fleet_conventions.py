@@ -26,12 +26,13 @@ between the two is caught where someone can act on it.
 two reasoning comments match — the comments sit at the config file's root
 rather than in its package block, which the rule's source ("in the config
 file itself") allows and the reconciler's own consumer test happened not to
-look for; auto-merge is armed and `pr-title.yml` is present. This repo keeps no numbered pile (no `docs/ideas.md`, no `IDEAS.md`,
-nothing `Idea-Id`-shaped anywhere), so the pile rule — a repo with a pile
-must run `reconciler verify` via `trailers.yml` — is vacuous here; the test
-says so and trips the day a pile appears, rather than passing silently
-forever. CONTRIBUTING.md did not exist; it does now, and names the test
-command CI runs verbatim.
+look for; auto-merge is armed and `pr-title.yml` is present. This repo kept no numbered
+pile when this file was written, so the pile rule — a repo with a pile must
+run `reconciler verify` via `trailers.yml` — was vacuous, and the test said
+so and was written to trip the day a pile appeared. It did: `docs/ideas.md`
+landed with E3-piles, `trailers.yml` with E3-trailers, and the test is now
+the positive form. CONTRIBUTING.md did not exist; it does now, and names the
+test command CI runs verbatim.
 
 Five real-tree checks and five plants: one per real-tree helper the meta-scan
 (`tests/test_scans_fire.py`) would otherwise report as never having fired,
@@ -60,9 +61,7 @@ RULES = json.loads(VENDORED.read_text(encoding="utf-8"))
 RELEASE_PLEASE = ".github/workflows/release-please.yml"
 RELEASE_CONFIG = "release-please-config.json"
 CONTRIBUTING = "CONTRIBUTING.md"
-#: Where a numbered pile would live if this repo kept one. It does not (see
-#: the module docstring); the path is named so the pile rule has something
-#: concrete to check, and so the day a pile appears the check below trips.
+#: This repo's numbered pile, in the reconciler's form (E3-piles).
 PILE = "docs/ideas.md"
 ARMS_AUTOMERGE = "gh pr merge --auto"
 #: The exact command CONTRIBUTING.md and `.github/workflows/tests.yml` name.
@@ -201,17 +200,16 @@ def test_contributing_names_the_test_command():
     assert _names_test_command(workflow), "CONTRIBUTING names a command CI does not run"
 
 
-def test_the_pile_rule_is_vacuous_here_because_this_repo_keeps_no_pile():
+def test_trailers_workflow_is_present_because_a_pile_exists():
     """A repo with a numbered pile must run `reconciler verify` in CI
-    (`trailers.yml`). This repo keeps no pile, so the rule requires nothing —
-    and this test says so out loud instead of passing on an empty list. The
-    day `docs/ideas.md` appears, the first assertion trips: flip this test to
-    the positive form (assert the pile exists, assert nothing is missing) and
-    add the workflow the document names."""
-    assert not (REPO_ROOT / PILE).exists(), (
-        f"{PILE} now exists: the pile rule is live, and "
-        f"{RULES['required_when_pile_exists']} must be present"
-    )
+    (`trailers.yml`): rule 2a asserts LANDED from a trailer ahead of every
+    other signal, so a dangling one must be caught where it is written.
+
+    Until E3-piles this test was the vacuous form — it asserted that no pile
+    existed, so that the day one appeared it would trip rather than pass on
+    an empty list. It tripped as designed when `docs/ideas.md` landed, and is
+    now the positive form the reconciler's own consumer test carries."""
+    assert (REPO_ROOT / PILE).exists(), f"{PILE} is this repo's numbered pile"
     assert _missing_when_pile_exists(REPO_ROOT, RULES["required_when_pile_exists"]) == []
 
 

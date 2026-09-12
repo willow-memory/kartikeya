@@ -376,6 +376,94 @@ def test_a_rebuild_leaves_the_hand_written_history_alone(tmp_path):
         "the hand-written history was modified"
 
 
+# ── the Idea-Id trailer gate ─────────────────────────────────────────────────
+#
+# The fleet's conventions (tests/test_fleet_conventions.py) require
+# .github/workflows/trailers.yml to EXIST wherever docs/ideas.md exists. This
+# file's job is the other half, the same one it does for release.yml and
+# release-please.yml: that the workflow is wired to do what its name claims.
+# Every disagreement here is silent in the same way the release chain's are —
+# a shallow checkout makes `reconciler verify` read one commit and pass with
+# nothing verified; a job that never installs the reconciler or never runs it
+# against the pile is a green check that checks nothing.
+
+_PILE = _REPO / "docs" / "ideas.md"
+_TRAILERS_WF = _REPO / ".github" / "workflows" / "trailers.yml"
+
+
+def _trailers_gate_defects(workflow: dict) -> list[str]:
+    """Everything a parsed trailers.yml gets wrong, as readable defects; empty
+    when it is wired to verify every trailer in the full history against the
+    pile on every push and pull request to master."""
+    defects: list[str] = []
+    # `on:` parses as the boolean True — PyYAML applies the YAML 1.1 rule.
+    triggers = workflow.get(True) or workflow.get("on") or {}
+    for event in ("push", "pull_request"):
+        branches = (triggers.get(event) or {}).get("branches") or []
+        if "master" not in branches:
+            defects.append(f"{event} does not target master")
+    steps = [s for job in (workflow.get("jobs") or {}).values() for s in (job.get("steps") or [])]
+    checkout = next((s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")), None)
+    if checkout is None or (checkout.get("with") or {}).get("fetch-depth") != 0:
+        defects.append("checkout is shallow: verify would read one commit and pass vacuously")
+    runs = "\n".join(str(s.get("run", "")) for s in steps)
+    if "willow-reconciler" not in runs:
+        defects.append("the reconciler is never installed")
+    if "reconciler verify" not in runs or "--doc docs/ideas.md" not in runs:
+        defects.append("reconciler verify is not run against docs/ideas.md")
+    # The reconciler reads `--repo` as a path only when it carries a slash or
+    # is absolute; a bare `.` is resolved as a fleet NAME and fails (0.6.0).
+    # Found by running the workflow's own command here before committing it.
+    if re.search(r"--repo\s+\.(?:\s|$)", runs):
+        defects.append("--repo is a bare `.`, which the reconciler resolves as a name, not a path")
+    return defects
+
+
+def test_the_trailer_gate_is_wired_wherever_a_pile_exists():
+    """docs/ideas.md exists, so trailers.yml must exist (the fleet rule) AND
+    must be wired to verify the whole history against it (this file's rule).
+    The precondition is asserted, not skipped: a repo that retires its pile
+    should retire this test on purpose, not have it go quiet."""
+    assert _PILE.exists(), "this repo keeps its numbered pile at docs/ideas.md"
+    assert _TRAILERS_WF.exists(), \
+        "a numbered pile without trailers.yml: a dangling Idea-Id would go uncaught"
+    assert _trailers_gate_defects(_yaml(_TRAILERS_WF)) == []
+
+
+def test_the_trailer_gate_check_catches_a_planted_shallow_and_silent_workflow():
+    """Planted: a trailers.yml that triggers on the wrong branch, checks out
+    shallowly, never installs the reconciler and never runs it. Every defect
+    is named; a correctly wired synthetic workflow reports none."""
+    planted = yaml.safe_load(
+        "on:\n"
+        "  push:\n    branches: [main]\n"
+        "  pull_request:\n    branches: [main]\n"
+        "jobs:\n  verify-trailers:\n    steps:\n"
+        "      - uses: actions/checkout@v7\n"
+        "      - run: echo verified\n"
+    )
+    assert _trailers_gate_defects(planted) == [
+        "push does not target master",
+        "pull_request does not target master",
+        "checkout is shallow: verify would read one commit and pass vacuously",
+        "the reconciler is never installed",
+        "reconciler verify is not run against docs/ideas.md",
+    ]
+    wired = (
+        "on:\n"
+        "  push:\n    branches: [master]\n"
+        "  pull_request:\n    branches: [master]\n"
+        "jobs:\n  verify-trailers:\n    steps:\n"
+        "      - uses: actions/checkout@v7\n        with:\n          fetch-depth: 0\n"
+        "      - run: pip install \"willow-reconciler>=0.6.0\"\n"
+        "      - run: reconciler verify --repo {repo} --doc docs/ideas.md\n"
+    )
+    assert _trailers_gate_defects(yaml.safe_load(wired.format(repo="./"))) == []
+    assert _trailers_gate_defects(yaml.safe_load(wired.format(repo="."))) == [
+        "--repo is a bare `.`, which the reconciler resolves as a name, not a path"
+    ], "the spelling the fleet's template used, and the one that fails on a runner"
+
+
 def test_only_types_that_change_the_installed_package_cut_a_release():
     """Every un-hidden type releases on its own. jeles shipped v0.4.1 to PyPI
     for a `ci:` commit touching a workflow file — survivable when a human merges
