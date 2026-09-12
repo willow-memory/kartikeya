@@ -6,6 +6,7 @@ that willow-mcp's B-21 strip depends on.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -546,3 +547,42 @@ def test_the_gate_still_works_on_a_clean_config(
     monkeypatch.setenv("PGHOST", "/run/postgresql")
     assert "PGHOST" not in sandbox.kart_env(allow_db=False)
     assert sandbox.kart_env(allow_db=True)["PGHOST"] == "/run/postgresql"
+
+
+# ── a host without a POSIX uid, and a PATH whose first `bash` is not a shell ─
+# Both from the first Windows CI run (PR #59).
+
+
+def test_template_context_needs_no_uid_when_the_host_has_none(monkeypatch, tmp_path):
+    """`os.getuid` does not exist on Windows; the template context used to
+    call it unconditionally, so every bind collection raised before reading
+    a single entry. Without a uid and without XDG_RUNTIME_DIR in the
+    environment, the key is left out — a config's `{{XDG_RUNTIME_DIR}}`
+    stays a placeholder no path exists for, rather than rendering to "",
+    which Path reads as the current directory. With the variable set, it is
+    used as before."""
+    monkeypatch.delattr(sandbox.os, "getuid", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    ctx = sandbox._template_ctx(tmp_path)
+    assert "XDG_RUNTIME_DIR" not in ctx
+    rendered = sandbox._render("{{XDG_RUNTIME_DIR}}/bus", ctx)
+    assert rendered == "{{XDG_RUNTIME_DIR}}/bus" and not Path(rendered).exists()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert sandbox._template_ctx(tmp_path)["XDG_RUNTIME_DIR"] == str(tmp_path)
+
+
+def test_bash_lookup_skips_the_system_directory_and_takes_the_next_one(tmp_path):
+    """Planted PATH: a `bash` under the system directory first (Windows'
+    WSL launcher shape), a real one after it. The launcher is skipped and
+    the real one found; with only the launcher on PATH there is no bash;
+    with no system directory to skip, the first entry wins as usual."""
+    system = tmp_path / "Windows" / "System32"
+    git = tmp_path / "Git" / "bin"
+    for d in (system, git):
+        d.mkdir(parents=True)
+        (d / "bash").write_text("#!/bin/sh\n")
+        (d / "bash").chmod(0o755)
+    path = os.pathsep.join([str(system), str(git)])
+    assert sandbox._bash_outside(path, str(tmp_path / "Windows")) == str(git / "bash")
+    assert sandbox._bash_outside(str(system), str(tmp_path / "Windows")) is None
+    assert sandbox._bash_outside(path, None) == str(system / "bash")

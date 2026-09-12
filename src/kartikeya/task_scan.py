@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import posixpath
 import re
 import shlex
 
@@ -139,8 +140,12 @@ def _task_cwd() -> str:
 
 
 def _expand_cd_target(raw: str, current: str) -> str:
+    """The directory a `cd` in the task lands in. The task is a POSIX shell
+    command run inside the Linux sandbox, so its paths are joined with
+    posixpath whatever the host — `cd src` under `/srv/product` is
+    `/srv/product/src` on a Windows host too."""
     target = os.path.expanduser(os.path.expandvars(raw.strip("'\"")))
-    return target if os.path.isabs(target) else os.path.join(current, target)
+    return target if posixpath.isabs(target) else posixpath.join(current, target)
 
 
 def check_tree_rewrite(task_text: str = "", *, cwd: str | None = None) -> dict | None:

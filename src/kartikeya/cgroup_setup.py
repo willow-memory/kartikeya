@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import subprocess
 from pathlib import Path
 
@@ -74,7 +75,9 @@ def _cgroup_fs_path(systemd_path: str) -> str | None:
         return None
     if rel.startswith("/sys/fs/cgroup"):
         return rel if os.path.isdir(rel) else None
-    candidate = os.path.join("/sys/fs/cgroup", rel.lstrip("/"))
+    # A cgroup path is the kernel's, not the host filesystem's: joined with
+    # posixpath so the string is the same on every platform the code runs on.
+    candidate = posixpath.join("/sys/fs/cgroup", rel.lstrip("/"))
     return candidate if os.path.isdir(candidate) else None
 
 

@@ -229,8 +229,7 @@ def ensure_work_root(root: Path | None = None) -> Path | None:
 def _template_ctx(root: Path | None) -> dict[str, str]:
     home = str(Path.home())
     repo = str(root or willow_repo_root() or Path.cwd())
-    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return {
+    ctx = {
         "HOME": home,
         "WILLOW_ROOT": repo,
         "WILLOW_GROVE_ROOT": os.environ.get(
@@ -242,8 +241,18 @@ def _template_ctx(root: Path | None) -> dict[str, str]:
         "WILLOW_AGENTS_ROOT": os.environ.get(
             "WILLOW_AGENTS_ROOT", str(Path(home) / "SAFE" / "Agents")
         ),
-        "XDG_RUNTIME_DIR": xdg_runtime,
     }
+    # /run/user/<uid> is systemd-logind's default and needs a POSIX uid. A host
+    # without one (Windows) has neither, so the key is left out: a config's
+    # `{{XDG_RUNTIME_DIR}}` then stays an unrendered placeholder that no path
+    # exists for and the bind is skipped — rather than raising here, before
+    # any bind is read, or rendering to "" (which Path reads as the cwd).
+    getuid = getattr(os, "getuid", None)
+    if "XDG_RUNTIME_DIR" in os.environ or getuid is not None:
+        ctx["XDG_RUNTIME_DIR"] = os.environ.get(
+            "XDG_RUNTIME_DIR", f"/run/user/{getuid()}" if getuid else ""
+        )
+    return ctx
 
 
 def _render(path_template: str, ctx: dict[str, str]) -> str:
@@ -799,11 +808,34 @@ def build_bwrap_argv(
     return args
 
 
+def _bash_outside(path: str, system_dir: str | None) -> str | None:
+    """`bash` resolved on `path` (os.pathsep-separated), ignoring any entry
+    under `system_dir`. On Windows, System32 carries a `bash.exe` that is the
+    WSL launcher, not a shell: with no distribution installed it prints a
+    UTF-16 notice and exits 1, and it sits ahead of Git for Windows' real bash
+    on PATH. So the system directory is skipped and the first other bash wins."""
+    entries = [d for d in path.split(os.pathsep) if d]
+    if system_dir:
+        prefix = os.path.normcase(os.path.normpath(system_dir))
+        entries = [
+            d
+            for d in entries
+            if not os.path.normcase(os.path.normpath(d)).startswith(prefix)
+        ]
+    return shutil.which("bash", path=os.pathsep.join(entries)) if entries else None
+
+
 def _sandbox_bash() -> str:
     """Absolute bash path for bwrap exec (merged-usr has no /bin in the sandbox)."""
     for candidate in ("/usr/bin/bash", "/bin/bash"):
         if Path(candidate).is_file():
             return candidate
+    if os.name == "nt":
+        found = _bash_outside(
+            os.environ.get("PATH", ""), os.environ.get("SystemRoot", r"C:\Windows")
+        )
+        if found:
+            return found
     return "bash"
 
 
