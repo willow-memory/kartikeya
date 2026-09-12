@@ -586,6 +586,12 @@ def test_bash_lookup_skips_the_system_directory_and_takes_the_next_one(tmp_path)
         (d / name).write_text("#!/bin/sh\n")
         (d / name).chmod(0o755)
     path = os.pathsep.join([str(system), str(git)])
-    assert sandbox._bash_outside(path, str(tmp_path / "Windows")) == str(git / name)
-    assert sandbox._bash_outside(str(system), str(tmp_path / "Windows")) is None
-    assert sandbox._bash_outside(path, None) == str(system / name)
+
+    def found(p: str, system_dir: str | None) -> str | None:
+        # normcase: Python 3.11's which on Windows spells the extension `.EXE`.
+        hit = sandbox._bash_outside(p, system_dir)
+        return os.path.normcase(hit) if hit else None
+
+    assert found(path, str(tmp_path / "Windows")) == os.path.normcase(str(git / name))
+    assert found(str(system), str(tmp_path / "Windows")) is None
+    assert found(path, None) == os.path.normcase(str(system / name))
