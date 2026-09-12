@@ -17,8 +17,10 @@ start a worker without them, and pins the other two from its own test suite.
 Until now this module was undeclared in either direction, so a consumer depended
 on names this package had never promised.
 """
+
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import functools
 import json
@@ -78,7 +80,12 @@ _PG_SOCKET_DIR = "/var/run/postgresql"
 #: those are push-shaped acts, and the host performs them under its own
 #: authorization rather than handing a task the key.
 _DEFAULT_CREDENTIAL_PREFIXES = (
-    "ANTHROPIC_", "OPENROUTER_", "GROQ_", "HUGGINGFACE_", "HF_", "OPENAI_",
+    "ANTHROPIC_",
+    "OPENROUTER_",
+    "GROQ_",
+    "HUGGINGFACE_",
+    "HF_",
+    "OPENAI_",
 )
 
 
@@ -88,23 +95,33 @@ def bwrap_available() -> bool:
 
 def use_bwrap() -> bool:
     """Whether Kart intends bubblewrap sandboxing (not whether bwrap is installed)."""
-    if os.environ.get("WILLOW_KART_NO_BWRAP", "").strip().lower() in ("1", "true", "yes"):
-        return False
-    return True
+    return os.environ.get("WILLOW_KART_NO_BWRAP", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 @functools.lru_cache(maxsize=1)
 def _bwrap_supports_json_status() -> bool:
     """Whether the host bwrap understands --json-status-fd (KP3/S15)."""
     try:
-        h = subprocess.run(["bwrap", "--help"], capture_output=True, text=True, timeout=5)
+        h = subprocess.run(
+            ["bwrap", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
         return "--json-status-fd" in (h.stdout + h.stderr)
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
 def _is_fleet_repo(base: Path) -> bool:
-    return (base / "core" / "kart_sandbox.py").is_file() or (base / "core" / "pg_bridge.py").is_file()
+    return (base / "core" / "kart_sandbox.py").is_file() or (
+        base / "core" / "pg_bridge.py"
+    ).is_file()
 
 
 def _is_willow_mcp_repo(base: Path) -> bool:
@@ -212,15 +229,30 @@ def ensure_work_root(root: Path | None = None) -> Path | None:
 def _template_ctx(root: Path | None) -> dict[str, str]:
     home = str(Path.home())
     repo = str(root or willow_repo_root() or Path.cwd())
-    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return {
+    ctx = {
         "HOME": home,
         "WILLOW_ROOT": repo,
-        "WILLOW_GROVE_ROOT": os.environ.get("WILLOW_GROVE_ROOT", str(Path(home) / "github" / "safe-app-willow-grove")),
-        "WILLOW_SAFE_ROOT": os.environ.get("WILLOW_SAFE_ROOT", str(Path(home) / "SAFE" / "Applications")),
-        "WILLOW_AGENTS_ROOT": os.environ.get("WILLOW_AGENTS_ROOT", str(Path(home) / "SAFE" / "Agents")),
-        "XDG_RUNTIME_DIR": xdg_runtime,
+        "WILLOW_GROVE_ROOT": os.environ.get(
+            "WILLOW_GROVE_ROOT", str(Path(home) / "github" / "safe-app-willow-grove")
+        ),
+        "WILLOW_SAFE_ROOT": os.environ.get(
+            "WILLOW_SAFE_ROOT", str(Path(home) / "SAFE" / "Applications")
+        ),
+        "WILLOW_AGENTS_ROOT": os.environ.get(
+            "WILLOW_AGENTS_ROOT", str(Path(home) / "SAFE" / "Agents")
+        ),
     }
+    # /run/user/<uid> is systemd-logind's default and needs a POSIX uid. A host
+    # without one (Windows) has neither, so the key is left out: a config's
+    # `{{XDG_RUNTIME_DIR}}` then stays an unrendered placeholder that no path
+    # exists for and the bind is skipped — rather than raising here, before
+    # any bind is read, or rendering to "" (which Path reads as the cwd).
+    getuid = getattr(os, "getuid", None)
+    if "XDG_RUNTIME_DIR" in os.environ or getuid is not None:
+        ctx["XDG_RUNTIME_DIR"] = os.environ.get(
+            "XDG_RUNTIME_DIR", f"/run/user/{getuid()}" if getuid else ""
+        )
+    return ctx
 
 
 def _render(path_template: str, ctx: dict[str, str]) -> str:
@@ -235,7 +267,10 @@ def _render(path_template: str, ctx: dict[str, str]) -> str:
 _DB_GATE_WARNED: set[str] = set()
 
 _UNCONDITIONAL_BIND_KEYS = (
-    "bind_read_only", "bind_read_write", "bind_try", "bind_try_read_only",
+    "bind_read_only",
+    "bind_read_write",
+    "bind_try",
+    "bind_try_read_only",
 )
 
 
@@ -275,7 +310,9 @@ def _warn_if_db_gate_defeated(cfg: dict, source: str) -> list[str]:
     if reasons and source not in _DB_GATE_WARNED:
         _DB_GATE_WARNED.add(source)
         for reason in reasons:
-            _log.warning("kart-sandbox: allow_db cannot gate anything — %s (%s)", reason, source)
+            _log.warning(
+                "kart-sandbox: allow_db cannot gate anything — %s (%s)", reason, source
+            )
     return reasons
 
 
@@ -301,17 +338,16 @@ def resolve_sandbox_config(root: Path | None = None) -> tuple[dict, str]:
     env = os.environ.get("KART_SANDBOX_CONFIG", "").strip()
     if env:
         candidates.append(Path(env).expanduser())
-    try:
+    with contextlib.suppress(Exception):
         from .home import willow_home
+
         candidates.append(willow_home(root) / "kart-sandbox.json")
-    except Exception:
-        pass
     candidates.append(_DEFAULT_CONFIG)
     for path in candidates:
         if path.is_file():
             try:
                 cfg = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
+            except (OSError, ValueError):
                 continue
             _warn_if_db_gate_defeated(cfg, str(path))
             return cfg, str(path)
@@ -339,6 +375,14 @@ def work_root_read_only(root: Path | None = None) -> bool:
     return "{{WILLOW_ROOT}}" in ro and "{{WILLOW_ROOT}}" not in rw
 
 
+def _same_or_under(path: str, parent: str) -> bool:
+    """`path` is `parent` or inside it, judged by path components. Not by a
+    string prefix joined with "/": that is wrong wherever the separator is
+    not "/", and both callers compare resolved host paths."""
+    p, q = Path(path), Path(parent)
+    return p == q or q in p.parents
+
+
 def path_read_only_in_policy(path: str | Path, root: Path | None = None) -> bool | None:
     """How the resolved mount policy binds ``path``: True read-only, False
     read-write, None when no bind covers it at all.
@@ -358,10 +402,9 @@ def path_read_only_in_policy(path: str | Path, root: Path | None = None) -> bool
     best: bool | None = None
     best_len = -1
     for host, _container, ro in collect_bind_mounts(root):
-        h = str(host).rstrip("/") or "/"
-        if target == h or target.startswith(h + "/"):
-            if len(h) > best_len:
-                best, best_len = ro, len(h)
+        h = str(host)
+        if _same_or_under(target, h) and len(h) > best_len:
+            best, best_len = ro, len(h)
     return best
 
 
@@ -437,7 +480,9 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
                 # KP6a (S9): a required bind that is missing is usually config rot —
                 # surface it. bind_try entries are optional, so they stay silent.
                 if required:
-                    _log.warning("kart-sandbox: required bind target missing, skipped: %s", host)
+                    _log.warning(
+                        "kart-sandbox: required bind target missing, skipped: %s", host
+                    )
                 return
             resolved = host.resolve()
         except OSError:
@@ -456,7 +501,8 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
                     "kart-sandbox: %s was listed read-only and is being promoted to "
                     "read-write by a later entry. If this is WILLOW_ROOT or a trust "
                     "path, remove the read-write entry: the read-only one does not "
-                    "win.", key,
+                    "win.",
+                    key,
                 )
             mounts[key] = (existing[0], existing[1], existing[2] and ro)
         else:
@@ -484,14 +530,17 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
     if installed is not None:
         ikey = str(installed)
         covering = [
-            k for k, (_h, _c, ro) in mounts.items()
-            if not ro and (k == ikey or ikey.startswith(k.rstrip("/") + "/"))
+            k
+            for k, (_h, _c, ro) in mounts.items()
+            if not ro and _same_or_under(ikey, k)
         ]
         if covering:
             _log.warning(
                 "kart-sandbox: the installed willow_mcp tree %s is covered by a "
                 "read-write bind (%s); overlaying it read-only. A task must not be "
-                "able to edit the code that gates it.", ikey, ", ".join(sorted(covering)),
+                "able to edit the code that gates it.",
+                ikey,
+                ", ".join(sorted(covering)),
             )
             mounts[ikey] = (installed, installed, True)
 
@@ -506,15 +555,18 @@ def collect_bind_mounts(root: Path | None = None) -> list[tuple[Path, Path, bool
     # Worktrees usually do not have .venv-dev, so bind every known venv candidate.
     try:
         from .pyenv import venv_candidates
+
         for venv in venv_candidates(repo):
             if venv.is_dir():
                 _add(venv, True)
-    except Exception:
+    except Exception:  # noqa: BLE001 — any failure in the resolver degrades to the pre-pyenv binds below
         repo_venv = (repo / ".venv-dev") if repo else None
         if repo_venv and repo_venv.is_dir():
             _add(repo_venv, True)
         home_venv = Path.home() / ".willow-venv"
-        if home_venv.is_dir() and (not repo_venv or home_venv.resolve() != repo_venv.resolve()):
+        if home_venv.is_dir() and (
+            not repo_venv or home_venv.resolve() != repo_venv.resolve()
+        ):
             _add(home_venv, True)
     try:
         import psycopg2 as _pg2
@@ -637,10 +689,14 @@ def build_bwrap_argv(
     # NOTE: a --seccomp syscall filter (S13) is deferred — it needs a libseccomp/BPF
     #       toolchain decision; --new-session already covers the CVE-2017-5226 vector.
     args += [
-        "--dev", "/dev",
-        "--proc", "/proc",
-        "--tmpfs", "/tmp",
-        "--tmpfs", "/dev/shm",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--tmpfs",
+        "/dev/shm",
         "--unshare-pid",
         "--unshare-ipc",
         "--unshare-uts",
@@ -749,6 +805,7 @@ def build_bwrap_argv(
         # Written under WILLOW_HOME (not host /tmp) so it survives --tmpfs /tmp and
         # does not pollute the host /tmp (S11).
         from .home import willow_home as _wh
+
         _nsswitch = _wh(root) / "kart-nsswitch.conf"
         _nsswitch.write_text(
             "passwd:   files\ngroup:    files\nhosts:    files dns\n",
@@ -759,11 +816,34 @@ def build_bwrap_argv(
     return args
 
 
+def _bash_outside(path: str, system_dir: str | None) -> str | None:
+    """`bash` resolved on `path` (os.pathsep-separated), ignoring any entry
+    under `system_dir`. On Windows, System32 carries a `bash.exe` that is the
+    WSL launcher, not a shell: with no distribution installed it prints a
+    UTF-16 notice and exits 1, and it sits ahead of Git for Windows' real bash
+    on PATH. So the system directory is skipped and the first other bash wins."""
+    entries = [d for d in path.split(os.pathsep) if d]
+    if system_dir:
+        prefix = os.path.normcase(os.path.normpath(system_dir))
+        entries = [
+            d
+            for d in entries
+            if not os.path.normcase(os.path.normpath(d)).startswith(prefix)
+        ]
+    return shutil.which("bash", path=os.pathsep.join(entries)) if entries else None
+
+
 def _sandbox_bash() -> str:
     """Absolute bash path for bwrap exec (merged-usr has no /bin in the sandbox)."""
     for candidate in ("/usr/bin/bash", "/bin/bash"):
         if Path(candidate).is_file():
             return candidate
+    if os.name == "nt":
+        found = _bash_outside(
+            os.environ.get("PATH", ""), os.environ.get("SystemRoot", r"C:\Windows")
+        )
+        if found:
+            return found
     return "bash"
 
 
@@ -772,7 +852,9 @@ def task_allows_network(task_text: str) -> bool:
 
 
 def task_allows_localhost(task_text: str) -> bool:
-    return any(line.strip() == _ALLOW_LOCALHOST_DIRECTIVE for line in task_text.splitlines())
+    return any(
+        line.strip() == _ALLOW_LOCALHOST_DIRECTIVE for line in task_text.splitlines()
+    )
 
 
 def task_allows_db(task_text: str) -> bool:
@@ -804,7 +886,7 @@ def _parse_fleet_env_file(path: Path, prefixes: tuple[str, ...]) -> dict[str, st
     """Parse a shell KEY=VALUE env file. Skips comments and blank lines.
     Only includes keys matching prefixes. Strips surrounding quotes from values."""
     result: dict[str, str] = {}
-    try:
+    with contextlib.suppress(Exception):
         for raw in path.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -818,8 +900,6 @@ def _parse_fleet_env_file(path: Path, prefixes: tuple[str, ...]) -> dict[str, st
                 val = val[1:-1]
             if val:
                 result[key] = val
-    except Exception:
-        pass
     return result
 
 
@@ -832,13 +912,18 @@ def kart_env(
 ) -> dict[str, str]:
     repo = root or willow_repo_root()
     cfg = load_sandbox_config(repo)
-    prefixes = tuple(cfg.get("env_prefixes") or ("WILLOW_", "GROVE_", "OLLAMA_", "GIT_", "ANTHROPIC_", "GROQ_"))
+    prefixes = tuple(
+        cfg.get("env_prefixes")
+        or ("WILLOW_", "GROVE_", "OLLAMA_", "GIT_", "ANTHROPIC_", "GROQ_")
+    )
     db_prefixes = tuple(cfg.get("db_env_prefixes") or _DEFAULT_DB_ENV_PREFIXES)
     if allow_db:
         prefixes = prefixes + db_prefixes
     # GAP-B: credential-bearing env vars only reach the sandbox on a network-opted
     # task. A no-network task cannot exfil keys it was never handed.
-    cred_prefixes = tuple(cfg.get("credential_env_prefixes") or _DEFAULT_CREDENTIAL_PREFIXES)
+    cred_prefixes = tuple(
+        cfg.get("credential_env_prefixes") or _DEFAULT_CREDENTIAL_PREFIXES
+    )
 
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
@@ -848,7 +933,9 @@ def kart_env(
         # Marker so code inside bwrap tasks can detect the Kart sandbox context.
         "WILLOW_IN_KART": "1",
         "WILLOW_KART_ALLOW_NET": "1" if allow_net else "0",
-        "WILLOW_KART_ALLOW_LOCALHOST": "1" if allow_localhost and not allow_net else "0",
+        "WILLOW_KART_ALLOW_LOCALHOST": "1"
+        if allow_localhost and not allow_net
+        else "0",
         "WILLOW_KART_ALLOW_DB": "1" if allow_db else "0",
     }
     for key, val in os.environ.items():
@@ -872,12 +959,13 @@ def kart_env(
 
     try:
         from .pyenv import venv_bin_dirs, willow_python
+
         env["WILLOW_PYTHON"] = willow_python(repo)
         for bin_dir in reversed(venv_bin_dirs(repo)):
             venv_bin = str(bin_dir)
             if venv_bin not in env["PATH"].split(":"):
                 env["PATH"] = venv_bin + ":" + env["PATH"]
-    except Exception:
+    except Exception:  # noqa: BLE001 — same fallback as the binds: the resolver failing means the legacy venv
         venv_bin = None
         if repo and (repo / ".venv-dev" / "bin").is_dir():
             venv_bin = str(repo / ".venv-dev" / "bin")
@@ -902,23 +990,28 @@ def kart_env(
             _path_parts.append(_b)
 
     if "GIT_AUTHOR_NAME" not in env:
-        try:
-            name = subprocess.check_output(["git", "config", "--global", "user.name"], text=True).strip()
-            email = subprocess.check_output(["git", "config", "--global", "user.email"], text=True).strip()
+        with contextlib.suppress(Exception):
+            name = subprocess.check_output(
+                ["git", "config", "--global", "user.name"], text=True
+            ).strip()
+            email = subprocess.check_output(
+                ["git", "config", "--global", "user.email"], text=True
+            ).strip()
             if name:
                 env["GIT_AUTHOR_NAME"] = name
                 env["GIT_COMMITTER_NAME"] = name
             if email:
                 env["GIT_AUTHOR_EMAIL"] = email
                 env["GIT_COMMITTER_EMAIL"] = email
-        except Exception:
-            pass
 
     # Inside bwrap, /var/run is not present unless allow_db mounted the socket.
     # psycopg2 with host=None defaults to /var/run/postgresql.
     if allow_db and not env.get("WILLOW_PG_HOST"):
         import glob as _glob
-        for _sock in _glob.glob("/run/postgresql/.s.PGSQL.*") + _glob.glob("/tmp/.s.PGSQL.*"):
+
+        for _sock in _glob.glob("/run/postgresql/.s.PGSQL.*") + _glob.glob(
+            "/tmp/.s.PGSQL.*"
+        ):
             env["WILLOW_PG_HOST"] = str(Path(_sock).parent)
             break
 
@@ -996,16 +1089,21 @@ def sandbox_manifest(
     _cfg, config_source = resolve_sandbox_config(root)
     bound_rw: list[str] = []
     bound_ro: list[str] = []
-    try:
+    with contextlib.suppress(Exception):
         for host, _container, read_only in collect_bind_mounts(root):
             (bound_ro if read_only else bound_rw).append(str(host))
         for trust_root in collect_mcp_trust_ro_overlays(root):
             bound_ro.append(str(trust_root))
-    except Exception:
-        pass
-    path_dirs = kart_env(
-        root, allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db
-    ).get("PATH", "").split(":")
+    path_dirs = (
+        kart_env(
+            root,
+            allow_net=allow_net,
+            allow_localhost=allow_localhost,
+            allow_db=allow_db,
+        )
+        .get("PATH", "")
+        .split(":")
+    )
     if allow_net:
         network_mode = "full"
     elif allow_localhost:
@@ -1078,8 +1176,9 @@ def _rtk_rewrite(cmd: str, config: dict) -> str:
             text=True,
             timeout=2,
             env={"PATH": os.environ.get("PATH", ""), "RTK_TELEMETRY_DISABLED": "1"},
+            check=False,
         )
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return cmd
     if result.returncode != 0:
         return cmd
@@ -1117,7 +1216,7 @@ def _parse_size(s: str) -> int | None:
         return None
     mult = 1
     if s and s[-1] in "KMGT":
-        mult = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}[s[-1]]
+        mult = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}[s[-1]]
         s = s[:-1]
     try:
         return int(float(s) * mult)
@@ -1126,7 +1225,11 @@ def _parse_size(s: str) -> int | None:
 
 
 def resource_caps_enabled() -> bool:
-    return os.environ.get("WILLOW_KART_NO_RLIMIT", "").strip().lower() not in ("1", "true", "yes")
+    return os.environ.get("WILLOW_KART_NO_RLIMIT", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _resource_limits() -> dict | None:
@@ -1147,7 +1250,11 @@ def _resource_limits() -> dict | None:
 
 def rlimit_use_as() -> bool:
     """Opt-in RLIMIT_AS for rlimit-only installs (breaks large-VA workloads)."""
-    return os.environ.get("KART_RLIMIT_USE_AS", "").strip().lower() in ("1", "true", "yes")
+    return os.environ.get("KART_RLIMIT_USE_AS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def wrap_task_with_rlimits(cmd: str, limits: dict) -> str:
@@ -1186,7 +1293,9 @@ def _try_make_cgroup(limits: dict) -> str | None:
             controllers = set(f.read().split())
         if not ({"memory", "pids"} <= controllers):
             return None
-        leaf = os.path.join(parent, f"kart-{os.getpid()}-{int(time.time() * 1000) % 100000}")
+        leaf = os.path.join(
+            parent, f"kart-{os.getpid()}-{int(time.time() * 1000) % 100000}"
+        )
         os.mkdir(leaf)
         if "mem" in limits:
             with open(os.path.join(leaf, "memory.max"), "w") as f:
@@ -1208,6 +1317,7 @@ def _limits_context(limits: dict):
     """
     leaf = _try_make_cgroup(limits)
     if leaf:
+
         def _preexec_cgroup() -> None:
             try:
                 with open(os.path.join(leaf, "cgroup.procs"), "w") as f:
@@ -1241,7 +1351,9 @@ def run_shell(
     Returns {returncode, stdout, stderr, elapsed_s, sandbox: bwrap|plain}.
     """
     started = time.time()
-    run_env = kart_env(allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db)
+    run_env = kart_env(
+        allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db
+    )
     if env:
         run_env.update(env)
     if cwd:
@@ -1283,7 +1395,7 @@ def run_shell(
         # {"child-pid":N} once the child execs; its absence on a non-zero exit
         # means setup failed. Feature-gated so an old bwrap is unaffected.
         if _bwrap_supports_json_status():
-            status_file = tempfile.TemporaryFile(mode="w+")
+            status_file = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 — closed in the finally below; the fd must outlive this block
             fd = status_file.fileno()
             prefix = [prefix[0], "--json-status-fd", str(fd)] + prefix[1:]
             pass_fds = (fd,)
@@ -1298,7 +1410,7 @@ def run_shell(
         try:
             status_file.seek(0)
             txt = status_file.read()
-        except Exception:
+        except (OSError, ValueError):
             return None
         return "ok" if '"child-pid"' in txt else "failed"
 
@@ -1313,6 +1425,7 @@ def run_shell(
             cwd=cwd,
             pass_fds=pass_fds,
             preexec_fn=preexec_fn,
+            check=False,
         )
         elapsed = round(time.time() - started, 2)
         setup = _setup_state()
@@ -1341,7 +1454,7 @@ def run_shell(
             "error": "timeout",
             "sandbox": sandbox,
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — every failure to launch becomes a result row, never an exception out of the runner
         return {
             "returncode": -1,
             "stdout": "",
@@ -1354,10 +1467,8 @@ def run_shell(
         if cleanup is not None:
             cleanup()
         if status_file is not None:
-            try:
+            with contextlib.suppress(Exception):
                 status_file.close()
-            except Exception:
-                pass
 
 
 def clip_output(text: str, limit: int) -> str:
@@ -1390,7 +1501,11 @@ def run_shell_result_for_task(
         allow_localhost=allow_localhost,
         allow_db=allow_db,
     )
-    status = "completed" if raw.get("returncode") == 0 and raw.get("error") != "timeout" else "failed"
+    status = (
+        "completed"
+        if raw.get("returncode") == 0 and raw.get("error") != "timeout"
+        else "failed"
+    )
     result = {
         "returncode": raw.get("returncode"),
         "stdout": clip_output((raw.get("stdout") or "").strip(), 8000),
@@ -1424,7 +1539,7 @@ def run_shell_result_for_task(
     # KP3: attach the boundary manifest + any unreachable-path notes so a caller can
     # tell "this is empty" from "I couldn't see this." Best-effort — never fail the
     # task over manifest construction.
-    try:
+    with contextlib.suppress(Exception):
         manifest = sandbox_manifest(
             allow_net=allow_net,
             allow_localhost=allow_localhost,
@@ -1435,8 +1550,6 @@ def run_shell_result_for_task(
         if notes:
             manifest["notes"] = notes
         result["sandbox_manifest"] = manifest
-    except Exception:
-        pass
     return status, result
 
 
@@ -1447,12 +1560,13 @@ KART_LOG_RETENTION = 200
 
 def _kart_logs_root() -> Path:
     from .home import willow_home
+
     return Path(willow_home()) / ".kart-logs"
 
 
 def _prune_task_logs(root: Path, keep: int = KART_LOG_RETENTION) -> None:
     """Keep the newest `keep` task-log dirs; remove the rest. Best-effort."""
-    try:
+    with contextlib.suppress(Exception):
         dirs = sorted(
             (d for d in root.iterdir() if d.is_dir()),
             key=lambda d: d.stat().st_mtime,
@@ -1460,8 +1574,6 @@ def _prune_task_logs(root: Path, keep: int = KART_LOG_RETENTION) -> None:
         )
         for stale in dirs[keep:]:
             shutil.rmtree(stale, ignore_errors=True)
-    except Exception:
-        pass
 
 
 def write_task_log(
@@ -1481,7 +1593,9 @@ def write_task_log(
     None if the write failed.
     """
     try:
-        safe_id = "".join(c for c in str(task_id) if c.isalnum() or c in "_-") or "unknown"
+        safe_id = (
+            "".join(c for c in str(task_id) if c.isalnum() or c in "_-") or "unknown"
+        )
         log_dir = _kart_logs_root() / safe_id
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1528,5 +1642,5 @@ def write_task_log(
         )
         _prune_task_logs(log_dir.parent)
         return str(log_dir)
-    except Exception:
+    except Exception:  # noqa: BLE001 — a log that cannot be written is None; it never fails the task it describes
         return None

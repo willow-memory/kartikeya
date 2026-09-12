@@ -4,7 +4,9 @@ Not the full bwrap execution suite (carried next) — these pin the parts the
 decoupling touched: config resolution order, and the network-directive contract
 that willow-mcp's B-21 strip depends on.
 """
+
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -12,10 +14,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import sandbox  # noqa: E402
-
+from kartikeya import sandbox
 
 # ── repo root resolution (willow-mcp vs fleet) ───────────────────────────────
+
 
 def test_willow_mcp_repo_detected_by_src_layout(tmp_path):
     mcp = tmp_path / "willow-mcp"
@@ -63,7 +65,9 @@ def test_trust_overlay_skips_operator_alias_when_willow_home_set(tmp_path, monke
     (operator / "mcp_apps").mkdir(parents=True)
 
     monkeypatch.setenv("WILLOW_HOME", str(sandbox_home))
-    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: sandbox_home)
+    monkeypatch.setattr(
+        "kartikeya.home.willow_home", lambda package_root=None: sandbox_home
+    )
     monkeypatch.setattr("kartikeya.home.willow_home_alias", lambda: operator)
 
     overlays = sandbox.collect_mcp_trust_ro_overlays()
@@ -74,7 +78,9 @@ def test_trust_overlay_includes_consent_policy_files(tmp_path, monkeypatch):
     home = tmp_path / "willow-home"
     (home / "mcp_apps").mkdir(parents=True)
     (home / "config").mkdir(parents=True)
-    (home / "config" / "settings.global.json").write_text('{"consent": {"internet": false}}')
+    (home / "config" / "settings.global.json").write_text(
+        '{"consent": {"internet": false}}'
+    )
     (home / "config" / "consent.json").write_text('{"internet": false}')
     (home / "consent.json").write_text('{"internet": false}')
 
@@ -91,6 +97,7 @@ def test_trust_overlay_includes_consent_policy_files(tmp_path, monkeypatch):
 
 
 # ── config resolution (spec §5) ────────────────────────────────────────────
+
 
 @pytest.fixture
 def vendored_default(monkeypatch, tmp_path):
@@ -114,8 +121,9 @@ def test_the_isolation_fixture_actually_reaches_the_vendored_default(vendored_de
     """Guard the guard. If resolution order changes, the fixture stops isolating
     and the tests below quietly go back to asserting against host config."""
     _cfg, source = sandbox.resolve_sandbox_config()
-    assert sandbox.is_vendored_default(source), \
+    assert sandbox.is_vendored_default(source), (
         f"expected the shipped default, resolved {source!r} — the fixture no longer isolates"
+    )
 
 
 def test_vendored_default_config_loads(vendored_default):
@@ -153,6 +161,7 @@ def test_config_falls_back_to_default_when_override_missing(tmp_path, monkeypatc
 # policy produced the bind sets, so a reduced manifest was indistinguishable
 # from a legitimately narrow boundary. These assert the distinguisher exists.
 
+
 def test_resolve_reports_env_override_as_source(tmp_path, monkeypatch):
     custom = tmp_path / "fleet.json"
     custom.write_text('{"env_prefixes": ["CUSTOM_"], "bind_read_only": []}')
@@ -170,7 +179,9 @@ def test_resolve_reports_vendored_default_when_seam_absent(tmp_path, monkeypatch
     # $WILLOW_HOME/kart-sandbox.json — kartikeya silently used its own default.
     monkeypatch.delenv("KART_SANDBOX_CONFIG", raising=False)
     monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
-    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: tmp_path)
+    monkeypatch.setattr(
+        "kartikeya.home.willow_home", lambda package_root=None: tmp_path
+    )
 
     cfg, source = sandbox.resolve_sandbox_config()
 
@@ -178,12 +189,16 @@ def test_resolve_reports_vendored_default_when_seam_absent(tmp_path, monkeypatch
     assert sandbox.is_vendored_default(source) is True
 
 
-def test_resolve_prefers_willow_home_policy_over_vendored_default(tmp_path, monkeypatch):
+def test_resolve_prefers_willow_home_policy_over_vendored_default(
+    tmp_path, monkeypatch
+):
     policy = tmp_path / "kart-sandbox.json"
     policy.write_text('{"env_prefixes": ["FLEET_"], "bind_read_only": []}')
     monkeypatch.delenv("KART_SANDBOX_CONFIG", raising=False)
     monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
-    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: tmp_path)
+    monkeypatch.setattr(
+        "kartikeya.home.willow_home", lambda package_root=None: tmp_path
+    )
 
     cfg, source = sandbox.resolve_sandbox_config()
 
@@ -208,7 +223,9 @@ def test_manifest_carries_config_source(tmp_path, monkeypatch):
 def test_manifest_flags_generic_policy(tmp_path, monkeypatch):
     monkeypatch.delenv("KART_SANDBOX_CONFIG", raising=False)
     monkeypatch.setenv("WILLOW_HOME", str(tmp_path))
-    monkeypatch.setattr("kartikeya.home.willow_home", lambda package_root=None: tmp_path)
+    monkeypatch.setattr(
+        "kartikeya.home.willow_home", lambda package_root=None: tmp_path
+    )
 
     manifest = sandbox.sandbox_manifest()
 
@@ -216,6 +233,7 @@ def test_manifest_flags_generic_policy(tmp_path, monkeypatch):
 
 
 # ── B-21 contract: the worker's network-directive matching (spec §4) ───────
+
 
 def test_task_allows_network_exact_line_match():
     assert sandbox.task_allows_network("echo hi\n# allow_net") is True
@@ -226,9 +244,9 @@ def test_task_allows_network_rejects_non_directive_forms():
     # willow-mcp's strip (B-21) keys on `line.strip() == "# allow_net"`; anything
     # else must NOT enable egress, or the strip and the worker disagree.
     assert sandbox.task_allows_network("echo hi") is False
-    assert sandbox.task_allows_network("#allow_net") is False          # no space
-    assert sandbox.task_allows_network("echo # allow_net") is False    # not its own line
-    assert sandbox.task_allows_network("# allow_net now") is False     # trailing text
+    assert sandbox.task_allows_network("#allow_net") is False  # no space
+    assert sandbox.task_allows_network("echo # allow_net") is False  # not its own line
+    assert sandbox.task_allows_network("# allow_net now") is False  # trailing text
 
 
 def test_task_allows_localhost_exact_line_match():
@@ -237,7 +255,7 @@ def test_task_allows_localhost_exact_line_match():
 
 
 def test_parse_task_network_strips_directives():
-    body, net, local, db = sandbox.parse_task_network("curl x\n# allow_net")
+    body, net, _local, db = sandbox.parse_task_network("curl x\n# allow_net")
     assert net is True
     assert db is False
     assert "# allow_net" not in body
@@ -270,7 +288,8 @@ def test_build_bwrap_argv_db_socket_only_when_allow_db(monkeypatch, vendored_def
     real_exists = sandbox.Path.exists
 
     def exists(self):
-        if str(self) == "/var/run/postgresql":
+        # as_posix, not str: on Windows str() of this Path is backslashed.
+        if self.as_posix() == "/var/run/postgresql":
             return True
         return real_exists(self)
 
@@ -288,10 +307,18 @@ def test_bwrap_available_returns_bool():
 
 # ── resource caps: memory + PID limits (live-audit L-DOS-02 residual) ───────
 
-@pytest.mark.parametrize("text,expected", [
-    ("2G", 2 * 1024 ** 3), ("512M", 512 * 1024 ** 2), ("1024", 1024),
-    ("1.5G", int(1.5 * 1024 ** 3)), ("", None), ("garbage", None),
-])
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("2G", 2 * 1024**3),
+        ("512M", 512 * 1024**2),
+        ("1024", 1024),
+        ("1.5G", int(1.5 * 1024**3)),
+        ("", None),
+        ("garbage", None),
+    ],
+)
 def test_parse_size(text, expected):
     assert sandbox._parse_size(text) == expected
 
@@ -301,7 +328,7 @@ def test_resource_limits_default_and_off_switch(monkeypatch):
     monkeypatch.delenv("KART_PIDS_MAX", raising=False)
     monkeypatch.delenv("WILLOW_KART_NO_RLIMIT", raising=False)
     lim = sandbox._resource_limits()
-    assert lim["mem"] == 2 * 1024 ** 3 and lim["pids"] == 512
+    assert lim["mem"] == 2 * 1024**3 and lim["pids"] == 512
     monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
     assert sandbox._resource_limits() is None
 
@@ -310,18 +337,18 @@ def test_resource_limits_env_overrides(monkeypatch):
     monkeypatch.setenv("KART_MEM_MAX", "256M")
     monkeypatch.setenv("KART_PIDS_MAX", "64")
     lim = sandbox._resource_limits()
-    assert lim["mem"] == 256 * 1024 ** 2 and lim["pids"] == 64
+    assert lim["mem"] == 256 * 1024**2 and lim["pids"] == 64
 
 
 def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatch):
     # No delegated parent → in-sandbox prlimit/ulimit wrap, not host preexec.
     monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
     monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
-    preexec, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024 ** 2, "pids": 64})
+    preexec, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024**2, "pids": 64})
     assert mode == "rlimit"
     assert preexec is None and cleanup is None
     wrapped = sandbox.wrap_task_with_rlimits(
-        "echo hi", {"mem": 256 * 1024 ** 2, "pids": 64}
+        "echo hi", {"mem": 256 * 1024**2, "pids": 64}
     )
     assert "prlimit" in wrapped or "ulimit" in wrapped
     assert "--nproc=64" in wrapped or "ulimit -u 64" in wrapped
@@ -360,7 +387,8 @@ def test_rlimit_as_opt_in_contains_memory_hog(monkeypatch):
     monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
 
     hog = sandbox.run_shell(
-        "python3 -c 'x = bytearray(900*1024*1024); print(len(x))'", timeout=30)
+        "python3 -c 'x = bytearray(900*1024*1024); print(len(x))'", timeout=30
+    )
     assert hog["returncode"] != 0, hog
     assert hog.get("resource_limit") == "rlimit"
 
@@ -370,6 +398,7 @@ def test_rlimit_as_opt_in_contains_memory_hog(monkeypatch):
 
 
 # ── the work root: WILLOW_ROOT is the product, not the workbench ─────────────
+
 
 def _mcp_repo(tmp_path: Path) -> Path:
     """A minimal tree that _looks_like_willow_mcp()."""
@@ -426,7 +455,9 @@ def test_parent_is_emitted_before_its_writable_child(tmp_path, monkeypatch):
     assert order.index(str(repo)) < order.index(str(repo / "worktrees"))
 
 
-def test_read_write_promotion_of_a_read_only_path_is_logged(tmp_path, monkeypatch, caplog):
+def test_read_write_promotion_of_a_read_only_path_is_logged(
+    tmp_path, monkeypatch, caplog
+):
     # RW wins a collision regardless of order, so a per-repo rw entry for
     # WILLOW_ROOT silently undoes the read-only work root while the config still
     # reads correct. Two such entries were live on a real box. Never silent.
@@ -442,14 +473,20 @@ def test_read_write_promotion_of_a_read_only_path_is_logged(tmp_path, monkeypatc
     with caplog.at_level("WARNING"):
         mounts = {str(h): ro for h, _c, ro in sandbox.collect_bind_mounts(repo)}
     assert mounts[str(repo)] is False, "rw still wins — behaviour unchanged"
-    assert any("promoted to read-write" in r.getMessage() for r in caplog.records), \
+    assert any("promoted to read-write" in r.getMessage() for r in caplog.records), (
         "the promotion must be reported"
+    )
 
 
 # ── allow_db gate integrity ────────────────────────────────────────────────
 
+
 def _cfg(tmp_path, monkeypatch, **over):
-    base = {"env_prefixes": ["WILLOW_"], "bind_read_only": ["/usr"], "bind_read_write": []}
+    base = {
+        "env_prefixes": ["WILLOW_"],
+        "bind_read_only": ["/usr"],
+        "bind_read_write": [],
+    }
     base.update(over)
     path = tmp_path / "kart-sandbox.json"
     path.write_text(json.dumps(base))
@@ -482,16 +519,14 @@ def test_an_unconditional_socket_bind_is_reported(tmp_path, monkeypatch):
 
 
 def test_both_halves_are_reported_separately(tmp_path, monkeypatch):
-    _cfg(tmp_path, monkeypatch,
-         env_prefixes=["PG"], bind_try=["/var/run/postgresql"])
+    _cfg(tmp_path, monkeypatch, env_prefixes=["PG"], bind_try=["/var/run/postgresql"])
     cfg, source = sandbox.resolve_sandbox_config()
     assert len(sandbox._warn_if_db_gate_defeated(cfg, source)) == 2
 
 
 def test_a_custom_db_env_prefix_list_is_honoured(tmp_path, monkeypatch):
     """The check follows the config's own vocabulary, not a hardcoded pair."""
-    _cfg(tmp_path, monkeypatch,
-         env_prefixes=["MYDB_"], db_env_prefixes=["MYDB_"])
+    _cfg(tmp_path, monkeypatch, env_prefixes=["MYDB_"], db_env_prefixes=["MYDB_"])
     cfg, source = sandbox.resolve_sandbox_config()
     assert "MYDB_" in sandbox._warn_if_db_gate_defeated(cfg, source)[0]
 
@@ -506,8 +541,57 @@ def test_the_warning_is_emitted_once_per_source(tmp_path, monkeypatch, caplog):
     assert str(path) in sandbox._DB_GATE_WARNED
 
 
-def test_the_gate_still_works_on_a_clean_config(tmp_path, monkeypatch, vendored_default):
+def test_the_gate_still_works_on_a_clean_config(
+    tmp_path, monkeypatch, vendored_default
+):
     """The guard reports; it must not change behaviour."""
     monkeypatch.setenv("PGHOST", "/run/postgresql")
     assert "PGHOST" not in sandbox.kart_env(allow_db=False)
     assert sandbox.kart_env(allow_db=True)["PGHOST"] == "/run/postgresql"
+
+
+# ── a host without a POSIX uid, and a PATH whose first `bash` is not a shell ─
+# Both from the first Windows CI run (PR #59).
+
+
+def test_template_context_needs_no_uid_when_the_host_has_none(monkeypatch, tmp_path):
+    """`os.getuid` does not exist on Windows; the template context used to
+    call it unconditionally, so every bind collection raised before reading
+    a single entry. Without a uid and without XDG_RUNTIME_DIR in the
+    environment, the key is left out — a config's `{{XDG_RUNTIME_DIR}}`
+    stays a placeholder no path exists for, rather than rendering to "",
+    which Path reads as the current directory. With the variable set, it is
+    used as before."""
+    monkeypatch.delattr(sandbox.os, "getuid", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    ctx = sandbox._template_ctx(tmp_path)
+    assert "XDG_RUNTIME_DIR" not in ctx
+    rendered = sandbox._render("{{XDG_RUNTIME_DIR}}/bus", ctx)
+    assert rendered == "{{XDG_RUNTIME_DIR}}/bus" and not Path(rendered).exists()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert sandbox._template_ctx(tmp_path)["XDG_RUNTIME_DIR"] == str(tmp_path)
+
+
+def test_bash_lookup_skips_the_system_directory_and_takes_the_next_one(tmp_path):
+    """Planted PATH: a `bash` under the system directory first (Windows'
+    WSL launcher shape), a real one after it. The launcher is skipped and
+    the real one found; with only the launcher on PATH there is no bash;
+    with no system directory to skip, the first entry wins as usual."""
+    system = tmp_path / "Windows" / "System32"
+    git = tmp_path / "Git" / "bin"
+    # shutil.which on Windows finds `bash` only through a PATHEXT extension.
+    name = "bash.exe" if os.name == "nt" else "bash"
+    for d in (system, git):
+        d.mkdir(parents=True)
+        (d / name).write_text("#!/bin/sh\n")
+        (d / name).chmod(0o755)
+    path = os.pathsep.join([str(system), str(git)])
+
+    def found(p: str, system_dir: str | None) -> str | None:
+        # normcase: Python 3.11's which on Windows spells the extension `.EXE`.
+        hit = sandbox._bash_outside(p, system_dir)
+        return os.path.normcase(hit) if hit else None
+
+    assert found(path, str(tmp_path / "Windows")) == os.path.normcase(str(git / name))
+    assert found(str(system), str(tmp_path / "Windows")) is None
+    assert found(path, None) == os.path.normcase(str(system / name))

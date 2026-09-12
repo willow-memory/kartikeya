@@ -6,6 +6,7 @@ runs directly (these tests execute inside a sandbox already; nested bwrap is
 neither available nor the thing under test — the queue/worker/execute wiring is).
 Real bwrap execution is exercised on a host with bubblewrap.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -14,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import SqliteTaskQueue, TaskRow, run_worker  # noqa: E402
-from kartikeya import execute as kexec  # noqa: E402
+from kartikeya import SqliteTaskQueue, TaskRow, run_worker
+from kartikeya import execute as kexec
 
 
 @pytest.fixture(autouse=True)
@@ -97,8 +98,14 @@ def test_on_run_event_callbacks_fire(tmp_path):
     q = _queue(tmp_path)
     q.submit("E1", "echo hi")
     events = []
-    run_worker(q, once=True, slots=1,
-               on_run_event=lambda ev, row, **kw: events.append((ev, row.task_id, kw.get("status"))))
+    run_worker(
+        q,
+        once=True,
+        slots=1,
+        on_run_event=lambda ev, row, **kw: events.append(
+            (ev, row.task_id, kw.get("status"))
+        ),
+    )
     assert ("open", "E1", None) in events
     assert ("close", "E1", "completed") in events
 
@@ -156,8 +163,16 @@ def _localhost_row(**overrides):
         (_localhost_row(), None, "verifier unavailable"),
         (_network_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
         (_localhost_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
-        (_network_row(network_authorization=""), lambda *_: True, "signed envelope missing"),
-        (_localhost_row(network_authorization=""), lambda *_: True, "signed envelope missing"),
+        (
+            _network_row(network_authorization=""),
+            lambda *_: True,
+            "signed envelope missing",
+        ),
+        (
+            _localhost_row(network_authorization=""),
+            lambda *_: True,
+            "signed envelope missing",
+        ),
         (_network_row(), lambda *_: False, "verifier refused"),
         (_localhost_row(), lambda *_: False, "verifier refused"),
     ],
@@ -188,9 +203,7 @@ def test_network_authorizer_exception_denies_before_shell_launch(monkeypatch):
     def broken(*_args):
         raise RuntimeError("policy backend unavailable")
 
-    status, result = kexec.execute_task_row(
-        _network_row(), network_authorizer=broken
-    )
+    status, result = kexec.execute_task_row(_network_row(), network_authorizer=broken)
     assert status == "failed"
     assert "verifier error" in result["error"]
     assert launched == []
@@ -269,10 +282,9 @@ def test_worker_threads_network_authorizer_to_executor(tmp_path, monkeypatch):
         q,
         once=True,
         slots=1,
-        network_authorizer=lambda row, envelope: seen.append(
-            (row.task_id, envelope)
-        )
-        or True,
+        network_authorizer=lambda row, envelope: (
+            seen.append((row.task_id, envelope)) or True
+        ),
     )
     assert q.get("NET-WORKER")["status"] == "completed"
     assert seen == [("NET-WORKER", '{"signed":true}')]
@@ -284,6 +296,7 @@ def test_worker_threads_network_authorizer_to_executor(tmp_path, monkeypatch):
 # to publish tick_ok=True unconditionally, so a worker that failed every claim
 # looked identical to an idle one -- for 43 hours, after the 2026-09-05
 # Postgres restart left it holding a dead connection.
+
 
 class _StopTicking(Exception):
     """Escape hatch: raised from the heartbeat to end the daemon loop."""

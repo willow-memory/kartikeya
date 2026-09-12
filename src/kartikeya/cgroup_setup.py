@@ -1,7 +1,9 @@
 """Delegated cgroup parent provisioning for Kart resource caps (greenfield path)."""
+
 from __future__ import annotations
 
 import os
+import posixpath
 import subprocess
 from pathlib import Path
 
@@ -20,7 +22,11 @@ Delegate=memory pids
 
 
 def _user_config_dir() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "systemd" / "user"
+    return (
+        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        / "systemd"
+        / "user"
+    )
 
 
 def slice_unit_path() -> Path:
@@ -69,7 +75,9 @@ def _cgroup_fs_path(systemd_path: str) -> str | None:
         return None
     if rel.startswith("/sys/fs/cgroup"):
         return rel if os.path.isdir(rel) else None
-    candidate = os.path.join("/sys/fs/cgroup", rel.lstrip("/"))
+    # A cgroup path is the kernel's, not the host filesystem's: joined with
+    # posixpath so the string is the same on every platform the code runs on.
+    candidate = posixpath.join("/sys/fs/cgroup", rel.lstrip("/"))
     return candidate if os.path.isdir(candidate) else None
 
 
@@ -181,7 +189,10 @@ def setup_cgroup(*, start: bool = True) -> dict:
     unit_path = slice_unit_path()
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     changed = True
-    if unit_path.exists() and unit_path.read_text(encoding="utf-8") == SLICE_UNIT_CONTENT:
+    if (
+        unit_path.exists()
+        and unit_path.read_text(encoding="utf-8") == SLICE_UNIT_CONTENT
+    ):
         changed = False
     else:
         unit_path.write_text(SLICE_UNIT_CONTENT, encoding="utf-8")

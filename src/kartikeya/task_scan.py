@@ -17,9 +17,12 @@ Contract (hybrid lane):
 
 Disable the whole scan: WILLOW_KART_SCAN=0
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
+import posixpath
 import re
 import shlex
 
@@ -45,8 +48,10 @@ _FLEET_ALLOWED: tuple[str, ...] = (
     r"^pytest\b",
     r"^py\.test\b",
     r"^gh\s+(pr|issue|run|api|repo)\b",
-    r"^git\s+(status|log|diff|show|fetch|pull|push|add|commit|branch|checkout|"
-    r"worktree|rev-parse|merge|rebase|stash|tag|remote|clone|ls-files|grep)\b",
+    (
+        r"^git\s+(status|log|diff|show|fetch|pull|push|add|commit|branch|checkout|"
+        r"worktree|rev-parse|merge|rebase|stash|tag|remote|clone|ls-files|grep)\b"
+    ),
     r"^python3?\s+(-m\s+)?(pytest|ruff|mypy)\b",
     r"^ruff\b",
     r"^mypy\b",
@@ -57,8 +62,9 @@ _FLEET_ALLOWED: tuple[str, ...] = (
     r"^\$\{WILLOW_PYTHON:-python3\}\s+",
 )
 
-_ALWAYS_BLOCK_CATEGORIES = frozenset({"exfiltration", "obfuscation", "secret_access",
-                                      "resource_exhaustion"})
+_ALWAYS_BLOCK_CATEGORIES = frozenset(
+    {"exfiltration", "obfuscation", "secret_access", "resource_exhaustion"}
+)
 
 # Git verbs that rewrite the WORKING TREE. Under a read-only checkout with a
 # writable .git (the fleet's WILLOW_ROOT shape since 2026-09-09) these
@@ -97,7 +103,7 @@ def _tree_rewrite_verb(fragment: str) -> bool:
             if t in _BRANCH_CREATE_FLAGS:
                 # `-b NAME` at HEAD creates a ref and touches no file. A start
                 # point after the name (`-b NAME origin/x`) checks that ref out.
-                positional_after = [x for x in rest[i + 2:] if not x.startswith("-")]
+                positional_after = [x for x in rest[i + 2 :] if not x.startswith("-")]
                 return bool(positional_after)
         return True
     if verb in _TREE_WRITE_VERBS:
@@ -115,27 +121,31 @@ def _dir_read_only(path: str) -> bool | None:
     unresolvable policy answers None (unknown), which does not refuse."""
     try:
         from .sandbox import path_read_only_in_policy
+
         return path_read_only_in_policy(path)
-    except Exception:
+    except Exception:  # noqa: BLE001 — an unresolvable policy is "unknown", which the docstring says does not refuse
         return None
 
 
 def _task_cwd() -> str:
     """Where a task's shell starts: the resolved WILLOW_ROOT (the worker's
     working directory on the fleet), else the process cwd."""
-    try:
+    with contextlib.suppress(Exception):
         from .sandbox import willow_repo_root
+
         root = willow_repo_root()
         if root is not None:
             return str(root)
-    except Exception:
-        pass
     return os.getcwd()
 
 
 def _expand_cd_target(raw: str, current: str) -> str:
+    """The directory a `cd` in the task lands in. The task is a POSIX shell
+    command run inside the Linux sandbox, so its paths are joined with
+    posixpath whatever the host — `cd src` under `/srv/product` is
+    `/srv/product/src` on a Windows host too."""
     target = os.path.expanduser(os.path.expandvars(raw.strip("'\"")))
-    return target if os.path.isabs(target) else os.path.join(current, target)
+    return target if posixpath.isabs(target) else posixpath.join(current, target)
 
 
 def check_tree_rewrite(task_text: str = "", *, cwd: str | None = None) -> dict | None:
@@ -174,6 +184,7 @@ def check_tree_rewrite(task_text: str = "", *, cwd: str | None = None) -> dict |
         }
     return None
 
+
 # Host-configurable source paths that must not be read/written via task text.
 # Empty by default (standalone). A fleet host sets this to protect its hook
 # runner / settings files. Merged with $KART_HOOK_GUARD_PATHS at call time.
@@ -201,17 +212,21 @@ def _fleet_allowed(fragment: str) -> bool:
     text = fragment.strip()
     if not text:
         return True
-    return any(re.search(pat, text, re.IGNORECASE | re.MULTILINE) for pat in _FLEET_ALLOWED)
+    return any(
+        re.search(pat, text, re.IGNORECASE | re.MULTILINE) for pat in _FLEET_ALLOWED
+    )
 
 
 def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]:
     out: list[ScanIssue] = []
     for issue in issues:
-        if issue.severity >= SEV_CRITICAL:
-            out.append(issue)
-        elif issue.category in _ALWAYS_BLOCK_CATEGORIES and issue.severity >= SEV_HIGH:
-            out.append(issue)
-        elif not fleet and issue.severity >= SEV_HIGH:
+        if (
+            issue.severity >= SEV_CRITICAL
+            or issue.category in _ALWAYS_BLOCK_CATEGORIES
+            and issue.severity >= SEV_HIGH
+            or not fleet
+            and issue.severity >= SEV_HIGH
+        ):
             out.append(issue)
     return out
 
@@ -255,7 +270,9 @@ def _shell_fragments_from_task(task_text: str) -> list[str]:
 
 def _expand_shell_body(body: str) -> list[str]:
     """Split compound shell; keep heredoc / multiline blocks as one unit."""
-    lines = [ln for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    lines = [
+        ln for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")
+    ]
     if len(lines) == 1:
         return _CHAIN_SPLIT.split(lines[0])
     if len(lines) > 1 and not any("<<" in ln for ln in lines):

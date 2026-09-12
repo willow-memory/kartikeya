@@ -11,6 +11,7 @@ tree it describes, then plants a false claim to prove the check can actually
 fail rather than passing by construction (a scan that has never fired has not
 been shown to check anything).
 """
+
 from __future__ import annotations
 
 import ast
@@ -65,7 +66,9 @@ def test_the_stale_claim_check_actually_catches_a_stale_docstring(tmp_path):
         '`chore(master): release` commit exists anywhere in its history.\n"""\n'
         "from __future__ import annotations\n"
     )
-    assert _STALE_CLAIM in _module_docstring(stale), "planted claim should trip the guard"
+    assert _STALE_CLAIM in _module_docstring(stale), (
+        "planted claim should trip the guard"
+    )
 
     bare = tmp_path / "no_docstring.py"
     bare.write_text("from __future__ import annotations\n")

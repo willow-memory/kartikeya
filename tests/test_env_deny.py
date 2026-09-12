@@ -8,6 +8,7 @@ emitted when the bind is gone (willow-mcp env-fs.write-3ea8d27806c2 removed
 /run/user and {{XDG_RUNTIME_DIR}} from an operator's bind_try, leaving
 XDG_RUNTIME_DIR pointing at nothing).
 """
+
 from __future__ import annotations
 
 import json
@@ -20,7 +21,9 @@ from kartikeya import sandbox
 
 def _vendored() -> dict:
     return json.loads(
-        (Path(sandbox.__file__).parent / "data" / "kart-sandbox.json").read_text(encoding="utf-8")
+        (Path(sandbox.__file__).parent / "data" / "kart-sandbox.json").read_text(
+            encoding="utf-8"
+        )
     )
 
 
@@ -48,7 +51,9 @@ def custom_config(tmp_path, monkeypatch):
     return _make
 
 
-def test_default_deny_strips_the_keyring_but_not_its_siblings(monkeypatch, vendored_default):
+def test_default_deny_strips_the_keyring_but_not_its_siblings(
+    monkeypatch, vendored_default
+):
     monkeypatch.setenv("WILLOW_KEYRING", "/box/config/verifiers.json")
     monkeypatch.setenv("WILLOW_HANDOFF_PROJECT", "github")
     env = sandbox.kart_env()
@@ -77,26 +82,44 @@ def test_deny_applies_after_the_fleet_env_file(monkeypatch, custom_config, tmp_p
     custom_config()
     home = tmp_path / "box"
     home.mkdir()
-    (home / "env").write_text('WILLOW_KEYRING="/box/config/verifiers.json"\n', encoding="utf-8")
+    (home / "env").write_text(
+        'WILLOW_KEYRING="/box/config/verifiers.json"\n', encoding="utf-8"
+    )
     monkeypatch.setenv("WILLOW_HOME", str(home))
     monkeypatch.delenv("WILLOW_KEYRING", raising=False)
     env = sandbox.kart_env()
     assert "WILLOW_KEYRING" not in env
 
 
-def test_xdg_runtime_dir_dropped_when_no_bind_makes_it_reachable(monkeypatch, custom_config, tmp_path):
+def test_xdg_runtime_dir_dropped_when_no_bind_makes_it_reachable(
+    monkeypatch, custom_config, tmp_path
+):
     runtime = tmp_path / "run" / "user" / "1000"
     runtime.mkdir(parents=True)
     cfg = _vendored()
     for key in ("bind_try", "bind_try_read_only", "bind_read_only", "bind_read_write"):
-        cfg[key] = [p for p in cfg.get(key, []) if "run/user" not in p and "XDG" not in p]
-    custom_config(**{k: cfg[k] for k in ("bind_try", "bind_try_read_only", "bind_read_only", "bind_read_write")})
+        cfg[key] = [
+            p for p in cfg.get(key, []) if "run/user" not in p and "XDG" not in p
+        ]
+    custom_config(
+        **{
+            k: cfg[k]
+            for k in (
+                "bind_try",
+                "bind_try_read_only",
+                "bind_read_only",
+                "bind_read_write",
+            )
+        }
+    )
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     env = sandbox.kart_env()
     assert "XDG_RUNTIME_DIR" not in env
 
 
-def test_xdg_runtime_dir_kept_when_a_bind_reaches_it(monkeypatch, custom_config, tmp_path):
+def test_xdg_runtime_dir_kept_when_a_bind_reaches_it(
+    monkeypatch, custom_config, tmp_path
+):
     runtime = tmp_path / "run" / "user" / "1000"
     runtime.mkdir(parents=True)
     custom_config(bind_try=["{{XDG_RUNTIME_DIR}}"])

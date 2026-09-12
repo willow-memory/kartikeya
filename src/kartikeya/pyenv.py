@@ -5,8 +5,10 @@ from the fleet home module and with the hardcoded legacy monolith ``~/github/wil
 path dropped. The sandbox uses this to bind the venv holding psycopg2 etc. and to
 pick the interpreter for tasks. Falls back to the running interpreter.
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -27,7 +29,9 @@ def _looks_like_willow_mcp(root: Path) -> bool:
 
 
 def _looks_like_fleet(root: Path) -> bool:
-    return (root / "core" / "kart_sandbox.py").is_file() or (root / "core" / "pg_bridge.py").is_file()
+    return (root / "core" / "kart_sandbox.py").is_file() or (
+        root / "core" / "pg_bridge.py"
+    ).is_file()
 
 
 def venv_candidates(root: Path | None = None) -> list[Path]:
@@ -52,14 +56,14 @@ def venv_candidates(root: Path | None = None) -> list[Path]:
         raw = raw.strip()
         if raw:
             candidates.append(Path(raw).expanduser())
-    try:
+    with contextlib.suppress(Exception):
         candidates.append(willow_home(root) / "venv")
-    except Exception:
-        pass
-    candidates.extend([
-        willow_home_alias() / "venv",
-        Path.home() / ".willow-venv",
-    ])
+    candidates.extend(
+        [
+            willow_home_alias() / "venv",
+            Path.home() / ".willow-venv",
+        ]
+    )
 
     out: list[Path] = []
     seen: set[str] = set()

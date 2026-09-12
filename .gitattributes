@@ -1,0 +1,6 @@
+# Every text file is checked out with LF on every platform. Two tests pin
+# files byte-for-byte — tests/test_fleet_conventions.py hashes
+# tests/fleet_conventions.json as saved, tests/test_vendor_pins.py the body of
+# tools/changelog_dedup.py — and a CRLF conversion on a Windows checkout
+# changes the bytes without changing the file. Seen on the first Windows CI run.
+* text=auto eol=lf

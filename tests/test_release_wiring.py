@@ -11,11 +11,13 @@ still 0.0.7, the build produced 0.0.7, and the only thing that noticed was PyPI
 refusing a duplicate upload.
 
 Ported from willow-mcp, where a config mistake would have tagged
-`willow-mcp-v2.2.0` while the publish workflow listened for `v*`. Three checks
+`willow-mcp-v2.2.0` while the publish workflow listened for `v*`. Two checks
 there do not apply here and are deliberately absent rather than copied:
-kartikeya has no second version file to keep in step and no aggregate CI job to
-name.
+kartikeya has no second version file to keep in step. The aggregate CI job it
+does have — `test`, the one check branch protection names — is held to the
+same standard at the bottom of this file, with the rest of the CI floor.
 """
+
 from __future__ import annotations
 
 import ast
@@ -59,8 +61,11 @@ def test_the_tag_release_please_creates_matches_what_release_yml_listens_for():
     and nothing publishes, with no error anywhere. Observed on willow-mcp#256."""
     cfg = _package_config()
     version = _json(_MANIFEST)["."]
-    tag = (f"{cfg['package-name']}-v{version}"
-           if cfg.get("include-component-in-tag", True) else f"v{version}")
+    tag = (
+        f"{cfg['package-name']}-v{version}"
+        if cfg.get("include-component-in-tag", True)
+        else f"v{version}"
+    )
 
     # `on:` parses as the boolean True — PyYAML applies the YAML 1.1 rule.
     patterns = list(_yaml(_RELEASE_WF)[True]["push"]["tags"])
@@ -77,11 +82,13 @@ def test_the_version_has_exactly_one_source():
     here is a second copy, and a second copy is what drifts."""
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
     assert "version" in (pyproject["project"].get("dynamic") or [])
-    assert "version" not in pyproject["project"], \
+    assert "version" not in pyproject["project"], (
         "a literal project.version is exactly what broke v0.0.8"
+    )
     assert pyproject["tool"]["hatch"]["version"]["source"] == "vcs"
-    assert not _package_config().get("extra-files"), \
+    assert not _package_config().get("extra-files"), (
         "nothing in this repo stores a version, so nothing needs bumping"
+    )
 
 
 # A credential whose events actually trigger workflows. Either form is
@@ -95,8 +102,8 @@ def test_the_version_has_exactly_one_source():
 # unchanged. Widening this to accept GITHUB_TOKEN would give back the three
 # releases jeles lost.
 NON_SUPPRESSED_CREDENTIALS = (
-    "RELEASE_PLEASE_TOKEN",              # fine-grained PAT (being retired)
-    "steps.app-token.outputs.token",     # willow-ci App installation token
+    "RELEASE_PLEASE_TOKEN",  # fine-grained PAT (being retired)
+    "steps.app-token.outputs.token",  # willow-ci App installation token
 )
 
 
@@ -126,14 +133,17 @@ def test_release_automation_uses_a_non_suppressed_credential_everywhere():
     used: set[str] = set()
     values: list[str] = []
     for step in steps:
-        for value in list((step.get("env") or {}).values()) + \
-                     list((step.get("with") or {}).values()):
+        for value in list((step.get("env") or {}).values()) + list(
+            (step.get("with") or {}).values()
+        ):
             values.append(str(value))
             used.update(re.findall(r"secrets\.([A-Z_]+)", str(value)))
-    assert any(_names_a_non_suppressed_credential(v) for v in values), \
+    assert any(_names_a_non_suppressed_credential(v) for v in values), (
         f"no non-suppressed credential anywhere in the job; secrets seen: {used}"
-    assert "GITHUB_TOKEN" not in used, \
+    )
+    assert "GITHUB_TOKEN" not in used, (
         f"GITHUB_TOKEN's events do not trigger workflows; found {used}"
+    )
 
 
 def test_auto_merge_waits_for_ci_rather_than_merging_directly():
@@ -169,13 +179,20 @@ def test_the_changelog_is_rebuilt_before_auto_merge_is_armed():
         assert hits, f"no step matching {needle!r} in {names}"
         return hits[0]
 
-    assert (index_of("actions/checkout") < index_of("release-please-action")
-            < index_of("Rebuild the changelog") < index_of("Arm auto-merge")), names
+    assert (
+        index_of("actions/checkout")
+        < index_of("release-please-action")
+        < index_of("Rebuild the changelog")
+        < index_of("Arm auto-merge")
+    ), names
 
-    checkout = next(s for s in steps
-                    if str(s.get("uses", "")).startswith("actions/checkout"))
+    checkout = next(
+        s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")
+    )
     assert checkout["with"]["fetch-depth"] == 0, "needs full history for the range"
-    assert checkout["with"]["fetch-tags"] is True, "needs tags to find the previous release"
+    assert checkout["with"]["fetch-tags"] is True, (
+        "needs tags to find the previous release"
+    )
 
 
 def test_a_changelog_bail_does_not_block_the_release():
@@ -197,7 +214,10 @@ def _packaged_paths_declared_in(embedded_python: str) -> tuple:
     read out of the AST. Comments in that script name the other repos' paths
     on purpose, so this is a parse, not a search."""
     for node in ast.walk(ast.parse(embedded_python)):
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "PACKAGED":
+        if (
+            isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", "") == "PACKAGED"
+        ):
             return ast.literal_eval(node.value)
     raise AssertionError("the pr-title check no longer assigns PACKAGED")
 
@@ -227,14 +247,19 @@ def test_the_pr_title_check_guards_both_directions():
     text: the comments there name the other repos' paths deliberately, and a
     substring check would flag its own explanation."""
     wf = _REPO / ".github" / "workflows" / "pr-title.yml"
-    body = _yaml(wf)["jobs"]["title"]["steps"][-1]["run"].split("<<'PY'")[1].rsplit("PY", 1)[0]
+    body = (
+        _yaml(wf)["jobs"]["title"]["steps"][-1]["run"]
+        .split("<<'PY'")[1]
+        .rsplit("PY", 1)[0]
+    )
     packaged = _packaged_paths_declared_in(body)
 
     assert packaged == ("src/kartikeya/", "pyproject.toml"), packaged
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
     wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
-    assert wheel == ["src/kartikeya"], \
+    assert wheel == ["src/kartikeya"], (
         f"packaged path disagrees with what the wheel ships: {wheel}"
+    )
 
 
 def test_the_release_body_is_synced_after_the_release_is_created():
@@ -255,14 +280,19 @@ def test_the_release_body_is_synced_after_the_release_is_created():
         assert hits, f"no step matching {needle!r} in {names}"
         return hits[0]
 
-    assert (index_of("release-please-action") < index_of("Make the GitHub Release body")
-            < index_of("Arm auto-merge")), names
+    assert (
+        index_of("release-please-action")
+        < index_of("Make the GitHub Release body")
+        < index_of("Arm auto-merge")
+    ), names
 
     step = steps[index_of("Make the GitHub Release body")]
     run = step["run"]
     assert "--print-section" in run
     assert "gh release edit" in run
-    assert "$GITHUB_SHA" in run, "must not depend on which branch the previous step left"
+    assert "$GITHUB_SHA" in run, (
+        "must not depend on which branch the previous step left"
+    )
     assert "rstrip()" in run, "comparison must ignore trailing whitespace"
     assert _names_a_non_suppressed_credential(step.get("env"))
     assert "GITHUB_TOKEN" not in str(step.get("env"))
@@ -295,8 +325,13 @@ def _staged_tool(tmp_path: Path, changelog: str | None) -> Path:
 
 
 def _run_tool(tool: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(tool), *args],
-                          capture_output=True, text=True, cwd=str(tool.parents[1]))
+    return subprocess.run(
+        [sys.executable, str(tool), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(tool.parents[1]),
+        check=False,
+    )
 
 
 def _without_generated_sections(changelog: str) -> str:
@@ -372,8 +407,9 @@ def test_a_rebuild_leaves_the_hand_written_history_alone(tmp_path):
 
     r = _run_tool(tool)
     assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
-    assert (tmp_path / _CHANGELOG.name).read_text() == staged, \
+    assert (tmp_path / _CHANGELOG.name).read_text() == staged, (
         "the hand-written history was modified"
+    )
 
 
 # ── the Idea-Id trailer gate ─────────────────────────────────────────────────
@@ -400,17 +436,28 @@ def _trailers_gate_defects(workflow: dict) -> list[str]:
     # the checkout. An absent block means the repository's default grant,
     # which may be write; CodeQL flagged the absence on this file's first run.
     if workflow.get("permissions") != {"contents": "read"}:
-        defects.append("permissions are not exactly `contents: read`; verify only reads")
+        defects.append(
+            "permissions are not exactly `contents: read`; verify only reads"
+        )
     # `on:` parses as the boolean True — PyYAML applies the YAML 1.1 rule.
     triggers = workflow.get(True) or workflow.get("on") or {}
     for event in ("push", "pull_request"):
         branches = (triggers.get(event) or {}).get("branches") or []
         if "master" not in branches:
             defects.append(f"{event} does not target master")
-    steps = [s for job in (workflow.get("jobs") or {}).values() for s in (job.get("steps") or [])]
-    checkout = next((s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")), None)
+    steps = [
+        s
+        for job in (workflow.get("jobs") or {}).values()
+        for s in (job.get("steps") or [])
+    ]
+    checkout = next(
+        (s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")),
+        None,
+    )
     if checkout is None or (checkout.get("with") or {}).get("fetch-depth") != 0:
-        defects.append("checkout is shallow: verify would read one commit and pass vacuously")
+        defects.append(
+            "checkout is shallow: verify would read one commit and pass vacuously"
+        )
     runs = "\n".join(str(s.get("run", "")) for s in steps)
     if "willow-reconciler" not in runs:
         defects.append("the reconciler is never installed")
@@ -420,7 +467,9 @@ def _trailers_gate_defects(workflow: dict) -> list[str]:
     # is absolute; a bare `.` is resolved as a fleet NAME and fails (0.6.0).
     # Found by running the workflow's own command here before committing it.
     if re.search(r"--repo\s+\.(?:\s|$)", runs):
-        defects.append("--repo is a bare `.`, which the reconciler resolves as a name, not a path")
+        defects.append(
+            "--repo is a bare `.`, which the reconciler resolves as a name, not a path"
+        )
     return defects
 
 
@@ -430,8 +479,9 @@ def test_the_trailer_gate_is_wired_wherever_a_pile_exists():
     The precondition is asserted, not skipped: a repo that retires its pile
     should retire this test on purpose, not have it go quiet."""
     assert _PILE.exists(), "this repo keeps its numbered pile at docs/ideas.md"
-    assert _TRAILERS_WF.exists(), \
+    assert _TRAILERS_WF.exists(), (
         "a numbered pile without trailers.yml: a dangling Idea-Id would go uncaught"
+    )
     assert _trailers_gate_defects(_yaml(_TRAILERS_WF)) == []
 
 
@@ -462,7 +512,7 @@ def test_the_trailer_gate_check_catches_a_planted_shallow_and_silent_workflow():
         "permissions:\n  contents: read\n"
         "jobs:\n  verify-trailers:\n    steps:\n"
         "      - uses: actions/checkout@v7\n        with:\n          fetch-depth: 0\n"
-        "      - run: pip install \"willow-reconciler>=0.6.0\"\n"
+        '      - run: pip install "willow-reconciler>=0.6.0"\n'
         "      - run: reconciler verify --repo {repo} --doc docs/ideas.md\n"
     )
     assert _trailers_gate_defects(yaml.safe_load(wired.format(repo="./"))) == []
@@ -477,8 +527,15 @@ def test_only_types_that_change_the_installed_package_cut_a_release():
     the release PR, not once auto-merge does."""
     sections = _package_config()["changelog-sections"]
     visible = {s["type"] for s in sections if not s.get("hidden")}
-    assert visible == {"feat", "fix", "security", "perf", "refactor",
-                       "build", "deps"}, visible
+    assert visible == {
+        "feat",
+        "fix",
+        "security",
+        "perf",
+        "refactor",
+        "build",
+        "deps",
+    }, visible
     for t in ("docs", "test", "ci", "chore"):
         assert next(s for s in sections if s["type"] == t).get("hidden") is True
 
@@ -501,11 +558,14 @@ def test_a_breaking_change_below_1_0_cuts_1_0_0_rather_than_a_minor():
     cfg = _package_config()
     assert cfg.get("bump-minor-pre-major") is False, (
         "true caps a breaking change at a minor, which makes a downstream "
-        "`<1.0.0` cap meaningless. See willow-mcp docs/design/fleet-versioning.md")
-    assert cfg.get("bump-patch-for-minor-pre-major") is False, \
+        "`<1.0.0` cap meaningless. See willow-mcp docs/design/fleet-versioning.md"
+    )
+    assert cfg.get("bump-patch-for-minor-pre-major") is False, (
         "with this true, a feat would bump the patch instead of the minor"
-    assert _json(_MANIFEST)["."].startswith("0."), \
+    )
+    assert _json(_MANIFEST)["."].startswith("0."), (
         "past 1.0 both flags are dead weight — `isPreMajor` gates them. Remove."
+    )
 
 
 def test_the_publish_job_uses_oidc_with_attestations():
@@ -515,15 +575,17 @@ def test_the_publish_job_uses_oidc_with_attestations():
     job = _yaml(_RELEASE_WF)["jobs"]["publish"]
     perms = job.get("permissions") or {}
     assert perms.get("id-token") == "write", (
-        "the publish job must request id-token: write for Trusted Publishing")
+        "the publish job must request id-token: write for Trusted Publishing"
+    )
     publish = job["steps"]
     step = next(s for s in publish if "pypi-publish" in str(s.get("uses", "")))
     with_ = step.get("with") or {}
     assert "password" not in with_, (
-        "a stored token is not needed with Trusted Publishing — drop the "
-        "password line")
+        "a stored token is not needed with Trusted Publishing — drop the password line"
+    )
     assert with_.get("attestations") is not False, (
-        "attestations are available with OIDC — do not disable them")
+        "attestations are available with OIDC — do not disable them"
+    )
 
 
 def test_the_checkout_uses_a_non_suppressed_credential_so_pushes_are_not_gated():
@@ -540,11 +602,247 @@ def test_the_checkout_uses_a_non_suppressed_credential_so_pushes_are_not_gated()
     This is the fourth way this fleet has been bitten by token attribution, so
     it gets a test rather than a comment."""
     steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
-    checkout = next(s for s in steps
-                    if str(s.get("uses", "")).startswith("actions/checkout"))
+    checkout = next(
+        s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")
+    )
     token = str((checkout.get("with") or {}).get("token", ""))
     assert _names_a_non_suppressed_credential(token), (
         "checkout must carry a credential whose events trigger workflows — its "
         "credential is what the changelog step pushes with. "
-        f"Got: {token!r}")
+        f"Got: {token!r}"
+    )
     assert "GITHUB_TOKEN" not in token
+
+
+# ── the CI floor (fleet plan decision 5) ────────────────────────────────────
+#
+# tests.yml makes four claims that nothing at runtime checks: that its Linux
+# matrix is the set of Pythons pyproject says the package supports; that the
+# Windows job runs that range's floor and ceiling; that lint runs ruff at an
+# exact release; and that the aggregate `test` job — the one check branch
+# protection names — needs every leg and fails when any of them did not
+# succeed. Each of the four drifts silently: a classifier added without a leg
+# is a claimed Python never tested, an unpinned ruff is a job that goes red on
+# a tree nobody changed, and a gate that lacks `if: always()` or checks
+# `== 'failure'` is one that SKIPS (and so passes) when a leg fails or is
+# cancelled. Observed on willows-grove#5: `test-suite` failed, `test` reported
+# `skipping`, and the PR read MERGEABLE.
+
+_TESTS_WF = _REPO / ".github" / "workflows" / "tests.yml"
+_PYPROJECT = _REPO / "pyproject.toml"
+_CONTRIBUTING = _REPO / "CONTRIBUTING.md"
+#: The check branch protection requires, by exact name, fleet-wide.
+_GATE = "test"
+_CLASSIFIER_RE = re.compile(r"^Programming Language :: Python :: (3\.\d+)$")
+#: An exact pin and nothing looser: `ruff==0.16.7`, not `ruff`, `ruff>=…`
+#: or `ruff~=…`.
+_RUFF_PIN_RE = re.compile(r"(?<![\w.=<>~!])ruff==(\d+\.\d+\.\d+)(?![\w.])")
+
+
+def _minor(version: str) -> tuple[int, int]:
+    major, minor = version.split(".")
+    return int(major), int(minor)
+
+
+def _supported_pythons(pyproject_text: str) -> list[str]:
+    """The Python minors pyproject's classifiers claim, ascending. The bare
+    `Programming Language :: Python :: 3` says nothing about a version and is
+    not one; neither is any other classifier."""
+    classifiers = tomllib.loads(pyproject_text)["project"].get("classifiers") or []
+    found = [m.group(1) for c in classifiers if (m := _CLASSIFIER_RE.match(c))]
+    return sorted(found, key=_minor)
+
+
+def _matrix_pythons(workflow: dict, job: str) -> list[str]:
+    """The `python-version` axis of one job's matrix, as strings, ascending.
+    Strings because YAML reads an unquoted `3.10` as the float 3.1."""
+    strategy = (workflow.get("jobs") or {}).get(job, {}).get("strategy") or {}
+    axis = (strategy.get("matrix") or {}).get("python-version") or []
+    return sorted((str(v) for v in axis), key=_minor)
+
+
+def _ruff_pin(workflow: dict) -> str | None:
+    """The exact ruff release the lint job installs, or None when ruff is
+    installed unpinned, floored, or not at all."""
+    steps = (workflow.get("jobs") or {}).get("lint", {}).get("steps") or []
+    runs = "\n".join(str(s.get("run", "")) for s in steps)
+    match = _RUFF_PIN_RE.search(runs)
+    return match.group(1) if match else None
+
+
+def _lint_runs(workflow: dict) -> list[str]:
+    """The ruff commands the lint job runs, in order."""
+    steps = (workflow.get("jobs") or {}).get("lint", {}).get("steps") or []
+    return [
+        line.strip()
+        for s in steps
+        for line in str(s.get("run", "")).splitlines()
+        if line.strip().startswith("ruff ")
+    ]
+
+
+def _aggregate_gate_defects(workflow: dict, gate: str = _GATE) -> list[str]:
+    """Everything the aggregate job gets wrong, as readable defects; empty
+    when it needs every other job, runs `if: always()`, and has a step that
+    fails on each needed job's result being anything but `success`."""
+    jobs = workflow.get("jobs") or {}
+    job = jobs.get(gate)
+    if job is None:
+        return [f"no job named `{gate}`: branch protection requires that exact name"]
+    defects: list[str] = []
+    needs = job.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    for leg in jobs:
+        if leg != gate and leg not in needs:
+            defects.append(
+                f"`{leg}` is not in `{gate}`'s needs: its result cannot gate"
+            )
+    if str(job.get("if", "")).strip() != "always()":
+        defects.append(
+            f"`{gate}` does not run `if: always()`: a failed leg skips it, and a "
+            "skipped required check does not block a merge"
+        )
+    conditions = [str(s.get("if", "")) for s in (job.get("steps") or [])]
+    for leg in needs:
+        wanted = f"needs.{leg}.result != 'success'"
+        if not any(wanted in c for c in conditions):
+            defects.append(
+                f"no step fails on `{wanted}`: a skipped or cancelled `{leg}` "
+                "would pass the gate"
+            )
+    return defects
+
+
+def test_the_linux_matrix_is_exactly_the_pythons_pyproject_claims():
+    """Both sides derived, neither restated: the classifiers are what PyPI
+    shows and pip trusts, and the matrix is what is actually run. A version
+    in one and not the other is a claim nobody tests, or a test of a version
+    nobody claims."""
+    claimed = _supported_pythons(_PYPROJECT.read_text(encoding="utf-8"))
+    assert claimed, "pyproject.toml names no `Programming Language :: Python :: 3.X`"
+    assert _matrix_pythons(_yaml(_TESTS_WF), "test-matrix") == claimed
+
+
+def test_the_windows_job_runs_the_floor_and_the_ceiling_of_the_same_range():
+    """Two legs, the oldest and newest claimed Python: enough to see a
+    platform assumption on both ends without doubling the matrix. It must
+    not install bubblewrap — there is none — and must run the same command
+    as the Linux legs, so a test that passes only under a Linux-only setup
+    step is caught rather than hidden by a different invocation."""
+    claimed = _supported_pythons(_PYPROJECT.read_text(encoding="utf-8"))
+    workflow = _yaml(_TESTS_WF)
+    assert _matrix_pythons(workflow, "test-windows") == [claimed[0], claimed[-1]]
+    job = workflow["jobs"]["test-windows"]
+    assert str(job.get("runs-on", "")).startswith("windows"), job.get("runs-on")
+    runs = [str(s.get("run", "")) for s in job["steps"]]
+    assert not any("bubblewrap" in r or "apt-get" in r for r in runs)
+    assert "python -m pytest tests/ -q" in runs, "not the command CONTRIBUTING names"
+
+
+def test_the_lint_job_pins_ruff_exactly_and_contributing_names_the_same_release():
+    """A floor (`ruff>=`) turns the job red the day ruff adds a rule to a
+    tree nobody changed; an exact pin makes a ruff bump a commit that says
+    so. CONTRIBUTING names the release too, so a local `ruff check` is the
+    same check CI runs — and two places naming one version is the kind of
+    pair this file exists to keep equal."""
+    workflow = _yaml(_TESTS_WF)
+    pin = _ruff_pin(workflow)
+    assert pin is not None, "lint installs ruff unpinned, floored, or not at all"
+    assert _lint_runs(workflow) == ["ruff check .", "ruff format --check ."]
+    contributing = _CONTRIBUTING.read_text(encoding="utf-8")
+    documented = {m.group(1) for m in _RUFF_PIN_RE.finditer(contributing)}
+    assert documented == {pin}, (
+        f"tests.yml pins ruff=={pin}; CONTRIBUTING.md names {sorted(documented)}"
+    )
+
+
+def test_the_aggregate_gate_needs_every_leg_and_refuses_anything_but_success():
+    """The job branch protection names must be the only thing it needs to
+    name, which means it must speak for every leg, and speak `failure` for a
+    skip or a cancel as much as for a red run."""
+    assert _aggregate_gate_defects(_yaml(_TESTS_WF)) == []
+
+
+def test_the_floor_checks_catch_a_planted_drift_in_each_of_the_four_claims():
+    """Planted: a pyproject whose classifiers include the bare `3` and a
+    non-Python classifier (neither counts), read against a workflow whose
+    matrix dropped a claimed version; a lint job that installs ruff
+    unpinned, then floored, then pinned; and a gate that forgot a leg,
+    lacks `if: always()`, and checks `== 'failure'` — the exact shape that
+    passes on a skip. Every defect is named, and a correctly wired workflow
+    reports none."""
+    pyproject = (
+        "[project]\nname = 'x'\nclassifiers = [\n"
+        "  'Operating System :: POSIX :: Linux',\n"
+        "  'Programming Language :: Python :: 3',\n"
+        "  'Programming Language :: Python :: 3.13',\n"
+        "  'Programming Language :: Python :: 3.11',\n"
+        "  'Programming Language :: Python :: 3.12',\n"
+        "]\n"
+    )
+    assert _supported_pythons(pyproject) == ["3.11", "3.12", "3.13"]
+    assert _supported_pythons("[project]\nname = 'x'\n") == []
+
+    drifted = yaml.safe_load(
+        "jobs:\n"
+        "  test-matrix:\n    strategy:\n      matrix:\n"
+        "        python-version: ['3.12', '3.11']\n"
+        "  test-windows:\n    strategy:\n      matrix:\n"
+        "        python-version: [3.13]\n"
+        "  lint:\n    steps:\n      - run: pip install ruff\n      - run: ruff check .\n"
+        "  test:\n    needs: [test-matrix, lint]\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - if: ${{ needs.test-matrix.result == 'failure' }}\n        run: exit 1\n"
+        "      - if: ${{ needs.lint.result != 'success' }}\n        run: exit 1\n"
+    )
+    assert (
+        _matrix_pythons(drifted, "test-matrix")
+        == ["3.11", "3.12"]
+        != [
+            "3.11",
+            "3.12",
+            "3.13",
+        ]
+    )
+    assert _matrix_pythons(drifted, "test-windows") == ["3.13"], (
+        "an unquoted 3.13 arrives as a float and must still read as the version"
+    )
+    assert _ruff_pin(drifted) is None
+    assert (
+        _ruff_pin({"jobs": {"lint": {"steps": [{"run": "pip install ruff>=0.16"}]}}})
+        is None
+    )
+    assert (
+        _ruff_pin({"jobs": {"lint": {"steps": [{"run": "pip install ruff~=0.16.7"}]}}})
+        is None
+    )
+    assert (
+        _ruff_pin({"jobs": {"lint": {"steps": [{"run": "pip install ruff==0.16.7"}]}}})
+        == "0.16.7"
+    )
+    assert _lint_runs(drifted) == ["ruff check ."]
+    assert _aggregate_gate_defects(drifted) == [
+        "`test-windows` is not in `test`'s needs: its result cannot gate",
+        (
+            "`test` does not run `if: always()`: a failed leg skips it, and a "
+            "skipped required check does not block a merge"
+        ),
+        (
+            "no step fails on `needs.test-matrix.result != 'success'`: a skipped or "
+            "cancelled `test-matrix` would pass the gate"
+        ),
+    ]
+    assert _aggregate_gate_defects({"jobs": {"lint": {}}}) == [
+        "no job named `test`: branch protection requires that exact name"
+    ]
+
+    wired = yaml.safe_load(
+        "jobs:\n"
+        "  a:\n    steps: []\n"
+        "  b:\n    steps: []\n"
+        "  test:\n    needs: [a, b]\n    if: always()\n"
+        "    steps:\n"
+        "      - if: ${{ needs.a.result != 'success' }}\n        run: exit 1\n"
+        "      - if: ${{ needs.b.result != 'success' }}\n        run: exit 1\n"
+    )
+    assert _aggregate_gate_defects(wired) == []

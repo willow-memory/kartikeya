@@ -6,6 +6,7 @@ initiates; the host-side broker holds the credential. So ~/.netrc and
 ~/.config/gh, which used to ride in read-only under allow_net, are not bound at
 all, and the shipped policy no longer promises a GITHUB_ prefix.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kartikeya import sandbox  # noqa: E402
+from kartikeya import sandbox
 
 
 def _mcp_repo(base: Path) -> Path:
@@ -97,18 +98,31 @@ def test_vendored_default_promises_no_github_or_publishing_prefix(vendored_defau
     # this box is the tombstoned pre-migration home carrying its own stale
     # kart-sandbox.json (gap 8f791068c1a4), and the test reads that instead.
     cfg = sandbox.load_sandbox_config()
-    for prefix in ("GITHUB_", "TWINE_", "PYPI_", "NPM_", "AWS_", "DISCORD_", "SSH_AUTH"):
+    for prefix in (
+        "GITHUB_",
+        "TWINE_",
+        "PYPI_",
+        "NPM_",
+        "AWS_",
+        "DISCORD_",
+        "SSH_AUTH",
+    ):
         assert prefix not in cfg["env_prefixes"], prefix
         assert prefix not in cfg["credential_env_prefixes"], prefix
     # Inference keys remain the credential lane, in the file and in the code
     # default a config without the key falls back to.
     assert "GROQ_" in cfg["credential_env_prefixes"]
-    assert set(sandbox._DEFAULT_CREDENTIAL_PREFIXES) == set(cfg["credential_env_prefixes"])
+    assert set(sandbox._DEFAULT_CREDENTIAL_PREFIXES) == set(
+        cfg["credential_env_prefixes"]
+    )
 
 
 # ── the installed tree is never writable ─────────────────────────────────────
 
-def test_installed_tree_under_a_rw_bind_is_overlaid_read_only(tmp_path, monkeypatch, caplog):
+
+def test_installed_tree_under_a_rw_bind_is_overlaid_read_only(
+    tmp_path, monkeypatch, caplog
+):
     """A user-site install lives under ~/.local, which the shipped policy binds
     read-write. Measured on paper for a consumer box: a task could edit
     gate.py. The overlay closes it without touching the policy."""
@@ -118,14 +132,20 @@ def test_installed_tree_under_a_rw_bind_is_overlaid_read_only(tmp_path, monkeypa
     (installed / "willow_mcp").mkdir(parents=True)
     (installed / "willow_mcp" / "__init__.py").write_text("")
     cfg = tmp_path / "cfg.json"
-    cfg.write_text(json.dumps({
-        "bind_read_only": ["{{WILLOW_ROOT}}"],
-        "bind_read_write": [str(local)],
-        "env_prefixes": ["WILLOW_"],
-    }))
+    cfg.write_text(
+        json.dumps(
+            {
+                "bind_read_only": ["{{WILLOW_ROOT}}"],
+                "bind_read_write": [str(local)],
+                "env_prefixes": ["WILLOW_"],
+            }
+        )
+    )
     monkeypatch.setenv("KART_SANDBOX_CONFIG", str(cfg))
     monkeypatch.setenv("WILLOW_ROOT", str(repo))
-    monkeypatch.setattr(sandbox, "_installed_willow_mcp_root", lambda: installed.resolve())
+    monkeypatch.setattr(
+        sandbox, "_installed_willow_mcp_root", lambda: installed.resolve()
+    )
     with caplog.at_level("WARNING"):
         mounts = {str(h): ro for h, _c, ro in sandbox.collect_bind_mounts(repo)}
     assert mounts[str(local.resolve())] is False, "the parent stays as configured"
