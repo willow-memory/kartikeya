@@ -58,3 +58,13 @@ packages = ["src/kartikeya"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# The fleet CI floor (decision 5) runs `ruff check` and `ruff format --check`
+# under a release pinned in .github/workflows/tests.yml; the rule set is
+# ruff's own default, not narrowed here. The one exclusion is not a
+# loosening: tools/changelog_dedup.py is vendored from forge-play/Forge and
+# tests/test_vendor_pins.py holds its body byte-for-byte to Forge's, so
+# formatting or linting it HERE is exactly the local edit that pin forbids —
+# it gets ruff-clean upstream and is re-synced.
+extend-exclude = ["tools/changelog_dedup.py"]

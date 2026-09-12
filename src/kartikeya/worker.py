@@ -12,6 +12,7 @@ dropped. Two lanes:
 `main()` backs the `kartikeya` / `kart` console scripts: it constructs the
 reference SqliteTaskQueue and drains it, so a zero-infra install runs tasks.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,8 +41,8 @@ from .queue import SqliteTaskQueue, TaskQueue, TaskRow
 logger = logging.getLogger("kartikeya.worker")
 
 # Optional telemetry seams (replace legacy fleet monolith's loop_heartbeat / run_ledger).
-HeartbeatFn = Callable[..., None]           # on_heartbeat(lane=..., tick_ok=...)
-RunEventFn = Callable[..., None]            # on_run_event(event, row, status=None)
+HeartbeatFn = Callable[..., None]  # on_heartbeat(lane=..., tick_ok=...)
+RunEventFn = Callable[..., None]  # on_run_event(event, row, status=None)
 
 
 def _noop(*_a, **_k) -> None:
@@ -76,7 +77,9 @@ def _process_row(
         status, result = "failed", {"error": str(e), "context": f"{context}_exception"}
     try:
         queue.mark_done(
-            row.task_id, status=status, result=json.dumps(trim_task_result(result, status))
+            row.task_id,
+            status=status,
+            result=json.dumps(trim_task_result(result, status)),
         )
     except Exception as e:
         logger.error("mark_done failed for %s: %s", row.task_id, e)
@@ -142,7 +145,11 @@ def run_worker(
     on_heartbeat = on_heartbeat or _noop
     on_run_event = on_run_event or _noop
     context = "poll" if once else "daemon"
-    max_workers = 1 if lane == KART_LANE_BATCH else (slots if slots is not None else fast_worker_slots())
+    max_workers = (
+        1
+        if lane == KART_LANE_BATCH
+        else (slots if slots is not None else fast_worker_slots())
+    )
 
     in_flight: set[str] = set()
     lock = threading.Lock()
@@ -212,6 +219,7 @@ def run_worker(
 
 # ── console entry point ────────────────────────────────────────────────────
 
+
 def _default_queue() -> TaskQueue:
     db = os.environ.get("KART_DB", "").strip()
     if not db:
@@ -254,19 +262,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command")
     wp = sub.add_parser("worker", help="run the task queue worker (default)")
-    wp.add_argument("--lane", default=KART_LANE_FAST, choices=[KART_LANE_FAST, KART_LANE_BATCH])
+    wp.add_argument(
+        "--lane", default=KART_LANE_FAST, choices=[KART_LANE_FAST, KART_LANE_BATCH]
+    )
     wp.add_argument("--slots", type=int, default=None)
     wp.add_argument("--interval", type=float, default=5.0)
     wp.add_argument("--once", action="store_true", help="drain the queue and exit")
-    wp.add_argument("--db", default=None,
-                    help="SQLite queue path (default $KART_DB or $WILLOW_HOME/kart.db)")
+    wp.add_argument(
+        "--db",
+        default=None,
+        help="SQLite queue path (default $KART_DB or $WILLOW_HOME/kart.db)",
+    )
     wp.add_argument("-v", "--verbose", action="store_true")
 
     cp = sub.add_parser(
         "setup-cgroup",
         help="provision kart.slice (Delegate=memory pids) for cgroup resource caps",
     )
-    cp.add_argument("--no-start", action="store_true", help="install unit only, do not start")
+    cp.add_argument(
+        "--no-start", action="store_true", help="install unit only, do not start"
+    )
     cp.add_argument("--json", action="store_true", help="emit machine-readable result")
 
     sp = sub.add_parser("cgroup-status", help="check delegated cgroup parent readiness")
@@ -288,8 +303,13 @@ def main(argv: list[str] | None = None) -> int:
     queue = SqliteTaskQueue(args.db) if args.db else _default_queue()
     logger.info("kartikeya worker starting (lane=%s, once=%s)", args.lane, args.once)
     try:
-        run_worker(queue, lane=args.lane, slots=args.slots,
-                   interval=args.interval, once=args.once)
+        run_worker(
+            queue,
+            lane=args.lane,
+            slots=args.slots,
+            interval=args.interval,
+            once=args.once,
+        )
     except KeyboardInterrupt:
         return 130
     return 0

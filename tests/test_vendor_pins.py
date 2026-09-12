@@ -22,6 +22,7 @@ bodies are older snapshots missing fixes landed here (measured in #55). Their
 re-sync is separate work with its own tests, because for them it is a
 behaviour change.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,9 +48,12 @@ def _body(source: str) -> str:
     """The code body: from the `from __future__` line to EOF. The docstring
     above it is local and is not part of the pin."""
     start = source.find(_BODY_STARTS_AT)
-    assert start >= 0, f"no {_BODY_STARTS_AT!r} line — the body has no start to pin from"
-    assert source.find(_BODY_STARTS_AT, start + 1) < 0, \
+    assert start >= 0, (
+        f"no {_BODY_STARTS_AT!r} line — the body has no start to pin from"
+    )
+    assert source.find(_BODY_STARTS_AT, start + 1) < 0, (
         f"{_BODY_STARTS_AT!r} appears more than once — the body's start is ambiguous"
+    )
     return source[start:]
 
 
@@ -60,7 +64,9 @@ def _body_sha256(source: str) -> str:
 def test_the_vendored_body_is_byte_identical_to_forges():
     """The pin itself. Fails only when this copy's body differs from Forge's
     as measured; the docstring above the body may say anything."""
-    assert _body_sha256(_TOOL.read_text(encoding="utf-8")) == _FORGE_BODY_SHA256, _RESYNC
+    assert _body_sha256(_TOOL.read_text(encoding="utf-8")) == _FORGE_BODY_SHA256, (
+        _RESYNC
+    )
 
 
 def test_the_pin_catches_a_one_byte_change_and_ignores_the_docstring():
@@ -74,12 +80,13 @@ def test_the_pin_catches_a_one_byte_change_and_ignores_the_docstring():
     docstring = source[: len(source) - len(body)]
 
     at = body.index("def main()")
-    flipped = body[:at + 4] + "n" + body[at + 5:]
+    flipped = body[: at + 4] + "n" + body[at + 5 :]
     assert flipped != body and len(flipped) == len(body)
     assert _body_sha256(docstring + flipped) != _FORGE_BODY_SHA256, (
         "a one-byte change to the body must move the hash"
     )
 
-    assert _body_sha256('"""A different local docstring."""\n' + body) == _FORGE_BODY_SHA256, (
-        "the docstring is local; changing it must not read as vendor drift"
-    )
+    assert (
+        _body_sha256('"""A different local docstring."""\n' + body)
+        == _FORGE_BODY_SHA256
+    ), "the docstring is local; changing it must not read as vendor drift"

@@ -16,6 +16,7 @@ there do not apply here and are deliberately absent rather than copied:
 kartikeya has no second version file to keep in step and no aggregate CI job to
 name.
 """
+
 from __future__ import annotations
 
 import ast
@@ -59,8 +60,11 @@ def test_the_tag_release_please_creates_matches_what_release_yml_listens_for():
     and nothing publishes, with no error anywhere. Observed on willow-mcp#256."""
     cfg = _package_config()
     version = _json(_MANIFEST)["."]
-    tag = (f"{cfg['package-name']}-v{version}"
-           if cfg.get("include-component-in-tag", True) else f"v{version}")
+    tag = (
+        f"{cfg['package-name']}-v{version}"
+        if cfg.get("include-component-in-tag", True)
+        else f"v{version}"
+    )
 
     # `on:` parses as the boolean True — PyYAML applies the YAML 1.1 rule.
     patterns = list(_yaml(_RELEASE_WF)[True]["push"]["tags"])
@@ -77,11 +81,13 @@ def test_the_version_has_exactly_one_source():
     here is a second copy, and a second copy is what drifts."""
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
     assert "version" in (pyproject["project"].get("dynamic") or [])
-    assert "version" not in pyproject["project"], \
+    assert "version" not in pyproject["project"], (
         "a literal project.version is exactly what broke v0.0.8"
+    )
     assert pyproject["tool"]["hatch"]["version"]["source"] == "vcs"
-    assert not _package_config().get("extra-files"), \
+    assert not _package_config().get("extra-files"), (
         "nothing in this repo stores a version, so nothing needs bumping"
+    )
 
 
 # A credential whose events actually trigger workflows. Either form is
@@ -95,8 +101,8 @@ def test_the_version_has_exactly_one_source():
 # unchanged. Widening this to accept GITHUB_TOKEN would give back the three
 # releases jeles lost.
 NON_SUPPRESSED_CREDENTIALS = (
-    "RELEASE_PLEASE_TOKEN",              # fine-grained PAT (being retired)
-    "steps.app-token.outputs.token",     # willow-ci App installation token
+    "RELEASE_PLEASE_TOKEN",  # fine-grained PAT (being retired)
+    "steps.app-token.outputs.token",  # willow-ci App installation token
 )
 
 
@@ -126,14 +132,17 @@ def test_release_automation_uses_a_non_suppressed_credential_everywhere():
     used: set[str] = set()
     values: list[str] = []
     for step in steps:
-        for value in list((step.get("env") or {}).values()) + \
-                     list((step.get("with") or {}).values()):
+        for value in list((step.get("env") or {}).values()) + list(
+            (step.get("with") or {}).values()
+        ):
             values.append(str(value))
             used.update(re.findall(r"secrets\.([A-Z_]+)", str(value)))
-    assert any(_names_a_non_suppressed_credential(v) for v in values), \
+    assert any(_names_a_non_suppressed_credential(v) for v in values), (
         f"no non-suppressed credential anywhere in the job; secrets seen: {used}"
-    assert "GITHUB_TOKEN" not in used, \
+    )
+    assert "GITHUB_TOKEN" not in used, (
         f"GITHUB_TOKEN's events do not trigger workflows; found {used}"
+    )
 
 
 def test_auto_merge_waits_for_ci_rather_than_merging_directly():
@@ -169,13 +178,20 @@ def test_the_changelog_is_rebuilt_before_auto_merge_is_armed():
         assert hits, f"no step matching {needle!r} in {names}"
         return hits[0]
 
-    assert (index_of("actions/checkout") < index_of("release-please-action")
-            < index_of("Rebuild the changelog") < index_of("Arm auto-merge")), names
+    assert (
+        index_of("actions/checkout")
+        < index_of("release-please-action")
+        < index_of("Rebuild the changelog")
+        < index_of("Arm auto-merge")
+    ), names
 
-    checkout = next(s for s in steps
-                    if str(s.get("uses", "")).startswith("actions/checkout"))
+    checkout = next(
+        s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")
+    )
     assert checkout["with"]["fetch-depth"] == 0, "needs full history for the range"
-    assert checkout["with"]["fetch-tags"] is True, "needs tags to find the previous release"
+    assert checkout["with"]["fetch-tags"] is True, (
+        "needs tags to find the previous release"
+    )
 
 
 def test_a_changelog_bail_does_not_block_the_release():
@@ -197,7 +213,10 @@ def _packaged_paths_declared_in(embedded_python: str) -> tuple:
     read out of the AST. Comments in that script name the other repos' paths
     on purpose, so this is a parse, not a search."""
     for node in ast.walk(ast.parse(embedded_python)):
-        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "PACKAGED":
+        if (
+            isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", "") == "PACKAGED"
+        ):
             return ast.literal_eval(node.value)
     raise AssertionError("the pr-title check no longer assigns PACKAGED")
 
@@ -227,14 +246,19 @@ def test_the_pr_title_check_guards_both_directions():
     text: the comments there name the other repos' paths deliberately, and a
     substring check would flag its own explanation."""
     wf = _REPO / ".github" / "workflows" / "pr-title.yml"
-    body = _yaml(wf)["jobs"]["title"]["steps"][-1]["run"].split("<<'PY'")[1].rsplit("PY", 1)[0]
+    body = (
+        _yaml(wf)["jobs"]["title"]["steps"][-1]["run"]
+        .split("<<'PY'")[1]
+        .rsplit("PY", 1)[0]
+    )
     packaged = _packaged_paths_declared_in(body)
 
     assert packaged == ("src/kartikeya/", "pyproject.toml"), packaged
     pyproject = tomllib.loads((_REPO / "pyproject.toml").read_text())
     wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
-    assert wheel == ["src/kartikeya"], \
+    assert wheel == ["src/kartikeya"], (
         f"packaged path disagrees with what the wheel ships: {wheel}"
+    )
 
 
 def test_the_release_body_is_synced_after_the_release_is_created():
@@ -255,14 +279,19 @@ def test_the_release_body_is_synced_after_the_release_is_created():
         assert hits, f"no step matching {needle!r} in {names}"
         return hits[0]
 
-    assert (index_of("release-please-action") < index_of("Make the GitHub Release body")
-            < index_of("Arm auto-merge")), names
+    assert (
+        index_of("release-please-action")
+        < index_of("Make the GitHub Release body")
+        < index_of("Arm auto-merge")
+    ), names
 
     step = steps[index_of("Make the GitHub Release body")]
     run = step["run"]
     assert "--print-section" in run
     assert "gh release edit" in run
-    assert "$GITHUB_SHA" in run, "must not depend on which branch the previous step left"
+    assert "$GITHUB_SHA" in run, (
+        "must not depend on which branch the previous step left"
+    )
     assert "rstrip()" in run, "comparison must ignore trailing whitespace"
     assert _names_a_non_suppressed_credential(step.get("env"))
     assert "GITHUB_TOKEN" not in str(step.get("env"))
@@ -295,8 +324,12 @@ def _staged_tool(tmp_path: Path, changelog: str | None) -> Path:
 
 
 def _run_tool(tool: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(tool), *args],
-                          capture_output=True, text=True, cwd=str(tool.parents[1]))
+    return subprocess.run(
+        [sys.executable, str(tool), *args],
+        capture_output=True,
+        text=True,
+        cwd=str(tool.parents[1]),
+    )
 
 
 def _without_generated_sections(changelog: str) -> str:
@@ -372,8 +405,9 @@ def test_a_rebuild_leaves_the_hand_written_history_alone(tmp_path):
 
     r = _run_tool(tool)
     assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
-    assert (tmp_path / _CHANGELOG.name).read_text() == staged, \
+    assert (tmp_path / _CHANGELOG.name).read_text() == staged, (
         "the hand-written history was modified"
+    )
 
 
 # ── the Idea-Id trailer gate ─────────────────────────────────────────────────
@@ -400,17 +434,28 @@ def _trailers_gate_defects(workflow: dict) -> list[str]:
     # the checkout. An absent block means the repository's default grant,
     # which may be write; CodeQL flagged the absence on this file's first run.
     if workflow.get("permissions") != {"contents": "read"}:
-        defects.append("permissions are not exactly `contents: read`; verify only reads")
+        defects.append(
+            "permissions are not exactly `contents: read`; verify only reads"
+        )
     # `on:` parses as the boolean True — PyYAML applies the YAML 1.1 rule.
     triggers = workflow.get(True) or workflow.get("on") or {}
     for event in ("push", "pull_request"):
         branches = (triggers.get(event) or {}).get("branches") or []
         if "master" not in branches:
             defects.append(f"{event} does not target master")
-    steps = [s for job in (workflow.get("jobs") or {}).values() for s in (job.get("steps") or [])]
-    checkout = next((s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")), None)
+    steps = [
+        s
+        for job in (workflow.get("jobs") or {}).values()
+        for s in (job.get("steps") or [])
+    ]
+    checkout = next(
+        (s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")),
+        None,
+    )
     if checkout is None or (checkout.get("with") or {}).get("fetch-depth") != 0:
-        defects.append("checkout is shallow: verify would read one commit and pass vacuously")
+        defects.append(
+            "checkout is shallow: verify would read one commit and pass vacuously"
+        )
     runs = "\n".join(str(s.get("run", "")) for s in steps)
     if "willow-reconciler" not in runs:
         defects.append("the reconciler is never installed")
@@ -420,7 +465,9 @@ def _trailers_gate_defects(workflow: dict) -> list[str]:
     # is absolute; a bare `.` is resolved as a fleet NAME and fails (0.6.0).
     # Found by running the workflow's own command here before committing it.
     if re.search(r"--repo\s+\.(?:\s|$)", runs):
-        defects.append("--repo is a bare `.`, which the reconciler resolves as a name, not a path")
+        defects.append(
+            "--repo is a bare `.`, which the reconciler resolves as a name, not a path"
+        )
     return defects
 
 
@@ -430,8 +477,9 @@ def test_the_trailer_gate_is_wired_wherever_a_pile_exists():
     The precondition is asserted, not skipped: a repo that retires its pile
     should retire this test on purpose, not have it go quiet."""
     assert _PILE.exists(), "this repo keeps its numbered pile at docs/ideas.md"
-    assert _TRAILERS_WF.exists(), \
+    assert _TRAILERS_WF.exists(), (
         "a numbered pile without trailers.yml: a dangling Idea-Id would go uncaught"
+    )
     assert _trailers_gate_defects(_yaml(_TRAILERS_WF)) == []
 
 
@@ -462,7 +510,7 @@ def test_the_trailer_gate_check_catches_a_planted_shallow_and_silent_workflow():
         "permissions:\n  contents: read\n"
         "jobs:\n  verify-trailers:\n    steps:\n"
         "      - uses: actions/checkout@v7\n        with:\n          fetch-depth: 0\n"
-        "      - run: pip install \"willow-reconciler>=0.6.0\"\n"
+        '      - run: pip install "willow-reconciler>=0.6.0"\n'
         "      - run: reconciler verify --repo {repo} --doc docs/ideas.md\n"
     )
     assert _trailers_gate_defects(yaml.safe_load(wired.format(repo="./"))) == []
@@ -477,8 +525,15 @@ def test_only_types_that_change_the_installed_package_cut_a_release():
     the release PR, not once auto-merge does."""
     sections = _package_config()["changelog-sections"]
     visible = {s["type"] for s in sections if not s.get("hidden")}
-    assert visible == {"feat", "fix", "security", "perf", "refactor",
-                       "build", "deps"}, visible
+    assert visible == {
+        "feat",
+        "fix",
+        "security",
+        "perf",
+        "refactor",
+        "build",
+        "deps",
+    }, visible
     for t in ("docs", "test", "ci", "chore"):
         assert next(s for s in sections if s["type"] == t).get("hidden") is True
 
@@ -501,11 +556,14 @@ def test_a_breaking_change_below_1_0_cuts_1_0_0_rather_than_a_minor():
     cfg = _package_config()
     assert cfg.get("bump-minor-pre-major") is False, (
         "true caps a breaking change at a minor, which makes a downstream "
-        "`<1.0.0` cap meaningless. See willow-mcp docs/design/fleet-versioning.md")
-    assert cfg.get("bump-patch-for-minor-pre-major") is False, \
+        "`<1.0.0` cap meaningless. See willow-mcp docs/design/fleet-versioning.md"
+    )
+    assert cfg.get("bump-patch-for-minor-pre-major") is False, (
         "with this true, a feat would bump the patch instead of the minor"
-    assert _json(_MANIFEST)["."].startswith("0."), \
+    )
+    assert _json(_MANIFEST)["."].startswith("0."), (
         "past 1.0 both flags are dead weight — `isPreMajor` gates them. Remove."
+    )
 
 
 def test_the_publish_job_uses_oidc_with_attestations():
@@ -515,15 +573,17 @@ def test_the_publish_job_uses_oidc_with_attestations():
     job = _yaml(_RELEASE_WF)["jobs"]["publish"]
     perms = job.get("permissions") or {}
     assert perms.get("id-token") == "write", (
-        "the publish job must request id-token: write for Trusted Publishing")
+        "the publish job must request id-token: write for Trusted Publishing"
+    )
     publish = job["steps"]
     step = next(s for s in publish if "pypi-publish" in str(s.get("uses", "")))
     with_ = step.get("with") or {}
     assert "password" not in with_, (
-        "a stored token is not needed with Trusted Publishing — drop the "
-        "password line")
+        "a stored token is not needed with Trusted Publishing — drop the password line"
+    )
     assert with_.get("attestations") is not False, (
-        "attestations are available with OIDC — do not disable them")
+        "attestations are available with OIDC — do not disable them"
+    )
 
 
 def test_the_checkout_uses_a_non_suppressed_credential_so_pushes_are_not_gated():
@@ -540,11 +600,13 @@ def test_the_checkout_uses_a_non_suppressed_credential_so_pushes_are_not_gated()
     This is the fourth way this fleet has been bitten by token attribution, so
     it gets a test rather than a comment."""
     steps = _yaml(_RP_WF)["jobs"]["release-please"]["steps"]
-    checkout = next(s for s in steps
-                    if str(s.get("uses", "")).startswith("actions/checkout"))
+    checkout = next(
+        s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")
+    )
     token = str((checkout.get("with") or {}).get("token", ""))
     assert _names_a_non_suppressed_credential(token), (
         "checkout must carry a credential whose events trigger workflows — its "
         "credential is what the changelog step pushes with. "
-        f"Got: {token!r}")
+        f"Got: {token!r}"
+    )
     assert "GITHUB_TOKEN" not in token

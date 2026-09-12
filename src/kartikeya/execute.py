@@ -11,6 +11,7 @@ Lifted from legacy fleet monolith core/kart_execute.py, decoupled:
   §7 — the LLM/workflow surface is a later optional extra.
 - Result persistence goes through the `TaskQueue` seam, not a DB bridge.
 """
+
 from __future__ import annotations
 
 import json
@@ -153,7 +154,9 @@ def run_shell_task(
         return "failed", blocked
 
     timeout = timeout if timeout is not None else kart_timeout(context)
-    cmd_body, allow_net, allow_localhost, allow_db = _parse_task_network_directives(task_text)
+    cmd_body, allow_net, allow_localhost, allow_db = _parse_task_network_directives(
+        task_text
+    )
     blocks = _iter_fenced_blocks(cmd_body)
 
     if blocks:
@@ -282,7 +285,9 @@ def execute_task_row(
             if denial:
                 return "failed", denial
         elif network_authorizer is not None:
-            _body, allow_net, allow_localhost, allow_db = _parse_task_network_directives(cmd)
+            _body, allow_net, allow_localhost, allow_db = (
+                _parse_task_network_directives(cmd)
+            )
             if (allow_net or allow_localhost) and not network_authorizer(
                 row, getattr(row, "network_authorization", "") or ""
             ):
@@ -298,13 +303,16 @@ def execute_task_row(
     else:
         handler = (handlers or {}).get(ttype)
         if handler is None:
-            status, result = "failed", {
-                "error": (
-                    f"unsupported task type '{ttype}' — base kartikeya runs shell "
-                    "tasks; register a handler (execute_task_row(..., handlers=...)) "
-                    "or install the optional extra"
-                )
-            }
+            status, result = (
+                "failed",
+                {
+                    "error": (
+                        f"unsupported task type '{ttype}' — base kartikeya runs shell "
+                        "tasks; register a handler (execute_task_row(..., handlers=...)) "
+                        "or install the optional extra"
+                    )
+                },
+            )
         else:
             try:
                 status, result = handler(row, timeout=timeout, context=context)
@@ -319,8 +327,12 @@ def execute_task_row(
         from .sandbox import write_task_log
 
         log_dir = write_task_log(
-            row.task_id, cmd, status, result,
-            full_stdout=full_stdout, full_stderr=full_stderr,
+            row.task_id,
+            cmd,
+            status,
+            result,
+            full_stdout=full_stdout,
+            full_stderr=full_stderr,
         )
         if log_dir:
             result["log_dir"] = log_dir

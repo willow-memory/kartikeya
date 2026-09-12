@@ -4,6 +4,7 @@ These pin the two things the worker loop relies on: a claim moves a row out of
 'pending' exactly once (no double-claim under concurrency), and terminal state
 is recorded correctly.
 """
+
 import ast
 import dataclasses
 import sqlite3
@@ -30,7 +31,8 @@ def _fields_declared_twice(path: Path) -> dict[str, set[str]]:
         if not isinstance(node, ast.ClassDef):
             continue
         declared = [
-            n.target.id for n in node.body
+            n.target.id
+            for n in node.body
             if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
         ]
         twice = {n for n in declared if declared.count(n) > 1}
@@ -48,7 +50,8 @@ def test_no_dataclass_field_is_declared_twice():
     AST check can see it, which is why this test parses the file."""
     duplicates = _fields_declared_twice(Path(kqueue.__file__))
     assert not duplicates, {
-        cls: f"declares {sorted(names)} more than once" for cls, names in duplicates.items()
+        cls: f"declares {sorted(names)} more than once"
+        for cls, names in duplicates.items()
     }
 
 
@@ -74,7 +77,12 @@ def test_the_duplicate_field_scan_catches_a_planted_second_declaration(tmp_path)
 
 def test_task_row_field_order_is_what_positional_construction_assumes():
     assert [f.name for f in dataclasses.fields(TaskRow)] == [
-        "task_id", "task", "agent", "submitted_by", "network_authorization", "status",
+        "task_id",
+        "task",
+        "agent",
+        "submitted_by",
+        "network_authorization",
+        "status",
     ]
 
 
@@ -241,8 +249,8 @@ def test_reap_stale_honours_an_explicit_lease(tmp_path):
     q.submit("D", "sleep 999")
     q.claim_pending("kart", 1)
     _expire_claim(tmp_path, "D", seconds=120)
-    assert q.reap_stale(3600) == []      # inside a 1h lease
-    assert q.reap_stale(60) == ["D"]     # past a 60s lease
+    assert q.reap_stale(3600) == []  # inside a 1h lease
+    assert q.reap_stale(60) == ["D"]  # past a 60s lease
 
 
 def test_legacy_db_without_claimed_at_migrates_and_leases(tmp_path):

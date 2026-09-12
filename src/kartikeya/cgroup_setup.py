@@ -1,4 +1,5 @@
 """Delegated cgroup parent provisioning for Kart resource caps (greenfield path)."""
+
 from __future__ import annotations
 
 import os
@@ -20,7 +21,11 @@ Delegate=memory pids
 
 
 def _user_config_dir() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "systemd" / "user"
+    return (
+        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        / "systemd"
+        / "user"
+    )
 
 
 def slice_unit_path() -> Path:
@@ -181,7 +186,10 @@ def setup_cgroup(*, start: bool = True) -> dict:
     unit_path = slice_unit_path()
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     changed = True
-    if unit_path.exists() and unit_path.read_text(encoding="utf-8") == SLICE_UNIT_CONTENT:
+    if (
+        unit_path.exists()
+        and unit_path.read_text(encoding="utf-8") == SLICE_UNIT_CONTENT
+    ):
         changed = False
     else:
         unit_path.write_text(SLICE_UNIT_CONTENT, encoding="utf-8")

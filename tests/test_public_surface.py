@@ -12,6 +12,7 @@ scope and refused to start a worker without them, and pinned
 (its B-33 and B-65 floors). A consumer depending on names this package never
 promised is a break waiting to be nobody's fault; declaring them makes it ours.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -22,16 +23,26 @@ import kartikeya
 
 #: Re-exported at the top level, and in `__all__`.
 TOP_LEVEL = (
-    "TaskQueue", "TaskRow", "QueueStats", "SqliteTaskQueue",
-    "lanes", "check_kart_task", "run_shell_task", "NetworkAuthorizer",
-    "execute_task_row", "drain_claimed_tasks", "run_worker",
+    "TaskQueue",
+    "TaskRow",
+    "QueueStats",
+    "SqliteTaskQueue",
+    "lanes",
+    "check_kart_task",
+    "run_shell_task",
+    "NetworkAuthorizer",
+    "execute_task_row",
+    "drain_claimed_tasks",
+    "run_worker",
 )
 
 #: Promised, but imported by path rather than re-exported — `__all__` would
 #: invent a top-level spelling no caller uses.
 SANDBOX_SEAM = (
-    "resolve_sandbox_config", "is_vendored_default",
-    "collect_mcp_trust_ro_overlays", "ensure_work_root",
+    "resolve_sandbox_config",
+    "is_vendored_default",
+    "collect_mcp_trust_ro_overlays",
+    "ensure_work_root",
 )
 
 
@@ -49,8 +60,9 @@ def test_all_matches_what_is_declared():
 def test_the_sandbox_seam_is_importable(name):
     from kartikeya import sandbox
 
-    assert hasattr(sandbox, name), \
+    assert hasattr(sandbox, name), (
         f"kartikeya.sandbox.{name} is declared public and missing — willow-mcp holds it"
+    )
 
 
 def test_the_sandbox_seam_is_reachable_by_the_path_callers_use():
@@ -72,7 +84,14 @@ def test_run_worker_keeps_the_keywords_its_callers_pass():
     """
     params = inspect.signature(kartikeya.run_worker).parameters
     assert "queue" in params
-    for name in ("lane", "slots", "interval", "once", "on_heartbeat", "network_authorizer"):
+    for name in (
+        "lane",
+        "slots",
+        "interval",
+        "once",
+        "on_heartbeat",
+        "network_authorizer",
+    ):
         assert name in params, f"run_worker lost the {name} keyword"
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
 
@@ -82,4 +101,6 @@ def test_the_declared_surface_is_stated_in_the_package_docstring():
     doc = kartikeya.__doc__ or ""
     assert "Public surface:" in doc
     for name in SANDBOX_SEAM:
-        assert name in doc, f"{name} is tested as public but not declared in the docstring"
+        assert name in doc, (
+            f"{name} is tested as public but not declared in the docstring"
+        )

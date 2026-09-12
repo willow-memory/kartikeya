@@ -12,6 +12,7 @@ Backends shipped here:
 Hosts implement their own `TaskQueue` subclass for Postgres or an adopted
 schema (see the willow-mcp integration in docs/DESIGN.md §3).
 """
+
 from __future__ import annotations
 
 import json
@@ -26,6 +27,7 @@ from .lanes import reaper_stale_seconds
 @dataclass(frozen=True)
 class TaskRow:
     """A claimed unit of work, backend-agnostic."""
+
     task_id: str
     task: str
     agent: str = "kart"
@@ -41,6 +43,7 @@ class TaskRow:
 @dataclass(frozen=True)
 class QueueStats:
     """Aggregate counts for liveness / fleet_health."""
+
     pending: int = 0
     running: int = 0
     completed: int = 0
@@ -69,7 +72,9 @@ class TaskQueue(ABC):
     """
 
     @abstractmethod
-    def claim_pending(self, agent: str, limit: int, lane: str | None = None) -> list[TaskRow]:
+    def claim_pending(
+        self, agent: str, limit: int, lane: str | None = None
+    ) -> list[TaskRow]:
         """Atomically transition up to `limit` pending `agent` rows to
         'running' and return them. Must be safe under concurrent workers.
 
@@ -132,7 +137,8 @@ class SqliteTaskQueue(TaskQueue):
         with self._connect() as conn:
             conn.executescript(self._SCHEMA)
             columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
             }
             for name, decl in self._ADDED_COLUMNS.items():
                 if name not in columns:
@@ -153,7 +159,9 @@ class SqliteTaskQueue(TaskQueue):
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
-    def claim_pending(self, agent: str, limit: int, lane: str | None = None) -> list[TaskRow]:
+    def claim_pending(
+        self, agent: str, limit: int, lane: str | None = None
+    ) -> list[TaskRow]:
         # base SQLite backend does not model lanes; `lane` is ignored.
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -211,7 +219,9 @@ class SqliteTaskQueue(TaskQueue):
         so a task normally dies by its timeout and only ever reaches here when
         its worker did not survive to record that.
         """
-        age = reaper_stale_seconds() if max_age_seconds is None else int(max_age_seconds)
+        age = (
+            reaper_stale_seconds() if max_age_seconds is None else int(max_age_seconds)
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT task_id FROM tasks "
@@ -235,7 +245,9 @@ class SqliteTaskQueue(TaskQueue):
         and logs whatever comes back (see `worker._maybe_reap_and_prune`), so
         one is also swept at worker startup.
         """
-        age = reaper_stale_seconds() if max_age_seconds is None else int(max_age_seconds)
+        age = (
+            reaper_stale_seconds() if max_age_seconds is None else int(max_age_seconds)
+        )
         candidates = self.stale_running(age, agent=agent)
         if not candidates:
             return []
@@ -265,7 +277,9 @@ class SqliteTaskQueue(TaskQueue):
 
     def mark_done(self, task_id: str, *, status: str, result: str) -> None:
         if status not in ("completed", "failed"):
-            raise ValueError(f"terminal status must be completed|failed, got {status!r}")
+            raise ValueError(
+                f"terminal status must be completed|failed, got {status!r}"
+            )
         with self._connect() as conn:
             conn.execute(
                 "UPDATE tasks SET status=?, result=?, completed_at=datetime('now') "

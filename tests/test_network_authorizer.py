@@ -6,6 +6,7 @@ gate denies before launch, allows when the host says yes, is never consulted for
 a non-network task, and is opt-in (absent → unchanged behavior). Hermetic via
 WILLOW_KART_NO_BWRAP=1, like the other worker tests.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -29,7 +30,12 @@ def _queue(tmp_path) -> SqliteTaskQueue:
 
 def test_taskrow_carries_opaque_network_authorization():
     assert TaskRow(task_id="y", task="t").network_authorization == ""
-    assert TaskRow(task_id="x", task="t", network_authorization="env123").network_authorization == "env123"
+    assert (
+        TaskRow(
+            task_id="x", task="t", network_authorization="env123"
+        ).network_authorization
+        == "env123"
+    )
 
 
 def test_authorizer_denies_net_task_before_launch(tmp_path):
@@ -45,7 +51,7 @@ def test_authorizer_denies_net_task_before_launch(tmp_path):
     row = q.get("N1")
     assert row["status"] == "failed"
     assert "verifier refused" in row["result"]
-    assert "SHOULD_NOT_RUN" not in row["result"]      # the shell never ran
+    assert "SHOULD_NOT_RUN" not in row["result"]  # the shell never ran
     assert seen == ["N1"]
 
 

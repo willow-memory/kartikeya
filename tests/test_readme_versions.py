@@ -14,6 +14,7 @@ as `kartikeya`" sentence and refuses any `x.y.z` version literal there, then
 plants one to prove the check actually fires rather than passing by
 construction.
 """
+
 from __future__ import annotations
 
 import re
@@ -32,7 +33,9 @@ _VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
 
 def _released_sentence(text: str) -> str:
     m = _RELEASED_SENTENCE_RE.search(text)
-    assert m, "README no longer has a 'released on PyPI as `kartikeya`' sentence to check"
+    assert m, (
+        "README no longer has a 'released on PyPI as `kartikeya`' sentence to check"
+    )
     return m.group(0)
 
 
@@ -50,6 +53,10 @@ def test_the_check_actually_catches_a_stale_version_literal():
     """Planted: a README that regressed to naming a number would be caught by
     the assertion above. Proven here against a synthetic stale sentence rather
     than by editing the real file, so this test never itself goes stale."""
-    stale = "tested, and released on PyPI as `kartikeya` (0.0.9) — `pip install kartikeya`."
+    stale = (
+        "tested, and released on PyPI as `kartikeya` (0.0.9) — `pip install kartikeya`."
+    )
     sentence = _released_sentence(stale)
-    assert _VERSION_RE.search(sentence), "the planted sentence should have tripped the guard"
+    assert _VERSION_RE.search(sentence), (
+        "the planted sentence should have tripped the guard"
+    )

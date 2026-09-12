@@ -5,6 +5,7 @@
 * ``batch`` — long GPU/CPU work; ``kart-worker-batch.service``
   (``KART_WORKER_LANE=batch``) runs concurrently with fast workers.
 """
+
 from __future__ import annotations
 
 import os
@@ -35,9 +36,7 @@ def worker_mode() -> str:
     raw = (os.environ.get("KART_WORKER_LANE") or KART_WORKER_MODE_FAST).strip().lower()
     if raw in (KART_WORKER_MODE_FAST, KART_WORKER_MODE_BATCH, KART_WORKER_MODE_ALL):
         return raw
-    raise ValueError(
-        f"unknown KART_WORKER_LANE: {raw!r} (expected fast|batch|all)"
-    )
+    raise ValueError(f"unknown KART_WORKER_LANE: {raw!r} (expected fast|batch|all)")
 
 
 def fast_worker_slots() -> int:

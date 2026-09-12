@@ -8,6 +8,7 @@ point this anywhere via $WILLOW_HOME; otherwise it defaults to ~/.willow.
 Signatures accept an optional `package_root` for drop-in compatibility with the
 call sites lifted from legacy fleet monolith; it is ignored here.
 """
+
 from __future__ import annotations
 
 import os
