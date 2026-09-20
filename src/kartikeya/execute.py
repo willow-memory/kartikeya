@@ -14,6 +14,7 @@ Lifted from legacy fleet monolith core/kart_execute.py, decoupled:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -300,6 +301,16 @@ def execute_task_row(
             status, result = run_shell_task(cmd, timeout=timeout, context=context)
         except Exception as e:  # noqa: BLE001 — a task's failure is recorded on its row, never raised past the worker
             status, result = "failed", {"error": str(e)}
+        if isinstance(result, dict) and "kart_scan" in result:
+            # A real scan block (check_kart_task's refusal shape) — log it
+            # best-effort for the training corpus (GAP #2b). Logging is
+            # capture-only and must never affect the verdict already decided
+            # above: any failure here is swallowed, and the block proceeds
+            # regardless (see scan_ledger.record_block's own guarantees).
+            with contextlib.suppress(Exception):
+                from .scan_ledger import record_block
+
+                record_block(result, task_id=row.task_id, context=context)
     else:
         handler = (handlers or {}).get(ttype)
         if handler is None:
