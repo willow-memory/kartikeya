@@ -36,7 +36,6 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Added
 
-* **scan:** persistent scan-block ledger with false-positive capture ([14fe6db](https://github.com/willow-memory/kartikeya/commit/14fe6db51a43265ff1089fb737a76f544bea6ac0))
 * **scan:** persistent scan-block ledger with false-positive capture ([881f624](https://github.com/willow-memory/kartikeya/commit/881f6248e572e22b1b4e24f935078372a8e40554))
 
 ## [0.2.5](https://github.com/willow-memory/kartikeya/compare/v0.2.4...v0.2.5) (2026-09-12)
