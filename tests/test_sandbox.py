@@ -323,7 +323,11 @@ def test_build_bwrap_argv_allow_localhost_still_unshares_net():
     )
 
 
-def test_build_bwrap_argv_allow_net_still_shares_net():
+def test_build_bwrap_argv_allow_net_still_shares_net(vendored_default):
+    # allow_net=True makes build_bwrap_argv write kart-nsswitch.conf under
+    # willow_home(). Without vendored_default isolating WILLOW_HOME to a
+    # tmp_path, that resolves to the real ~/.willow — absent on a bare CI
+    # runner, so the write raises FileNotFoundError there.
     shared = sandbox.build_bwrap_argv(allow_net=True, allow_localhost=False)
     assert "--unshare-net" not in shared
 

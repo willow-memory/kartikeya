@@ -72,14 +72,17 @@ def _localhost_retired_result() -> tuple[str, dict]:
     fleet-egress classification — including a row that also carries
     `# allow_net`) and run_shell_task (catches any other caller of it
     directly)."""
-    return "failed", {"error": (
-        "allow_localhost_retired: allow_localhost was retired 2026-09-23 "
-        "(governance record retire-allow-localhost-2026-09-23, amends sealed "
-        "9fe5e179). It shared the host network namespace unfiltered. For real "
-        "network, use allow_net (with its signed envelope); for local-only "
-        "reach, there is no replacement yet — a loopback-only tier "
-        "(network-off sandbox + allowlisted forwarders) is designed but not "
-        "built. This row is refused, not run.")}
+    return "failed", {
+        "error": (
+            "allow_localhost_retired: allow_localhost was retired 2026-09-23 "
+            "(governance record retire-allow-localhost-2026-09-23, amends sealed "
+            "9fe5e179). It shared the host network namespace unfiltered. For real "
+            "network, use allow_net (with its signed envelope); for local-only "
+            "reach, there is no replacement yet — a loopback-only tier "
+            "(network-off sandbox + allowlisted forwarders) is designed but not "
+            "built. This row is refused, not run."
+        )
+    }
 
 
 def trim_task_result(result, status: str = ""):
