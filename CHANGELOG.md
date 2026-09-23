@@ -31,6 +31,15 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.3.2](https://github.com/willow-memory/kartikeya/compare/v0.3.1...v0.3.2) (2026-09-23)
+
+
+### Fixed
+
+* **kart:** isolate WILLOW_HOME in the allow_net bwrap test, format execute.py ([12443ea](https://github.com/willow-memory/kartikeya/commit/12443ea8f98f78d613cbf8078ea1c5df3adc788c))
+* **kart:** amend allow_localhost retirement per Loki 506FD78E ([bc5adf5](https://github.com/willow-memory/kartikeya/commit/bc5adf57a509e2bb02b80972ac8e6462e86e3833))
+* **kart:** retire allow_localhost — never map it to host networking ([645f01b](https://github.com/willow-memory/kartikeya/commit/645f01b0d44b13939c105f4071b714ea7423704c))
+
 ## [0.3.1](https://github.com/willow-memory/kartikeya/compare/v0.3.0...v0.3.1) (2026-09-23)
 
 
