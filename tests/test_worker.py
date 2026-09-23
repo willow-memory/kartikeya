@@ -184,47 +184,22 @@ def test_network_request_denied_before_shell_launch(
     assert launched == []
 
 
-def test_localhost_without_envelope_does_not_consult_authorizer(
+def test_localhost_row_is_refused_before_run_shell_task_or_authorizer(
     monkeypatch,
 ):
-    """execute_task_row's row-classification layer never demanded a signed
-    envelope for allow_localhost — that much is unchanged. This test mocks
-    run_shell_task out, so it does NOT exercise the 2026-09-23 retirement
-    refusal; see test_localhost_row_is_refused_by_run_shell_task for that
-    (unmocked) check. Kept to pin that the authorizer gate stays skipped for
-    a directive execute_task_row itself never classified as fleet egress."""
-    launched = []
-    monkeypatch.setattr(
-        kexec,
-        "run_shell_task",
-        lambda *_a, **_k: launched.append(True) or ("completed", {"stdout": "ok"}),
-    )
-    row = _localhost_row(network_authorization="")
-    status, result = kexec.execute_task_row(row, network_authorizer=lambda *_: False)
-    assert status == "completed"
-    assert result["stdout"] == "ok"
-    assert launched == [True]
-
-
-def test_localhost_row_is_refused_by_run_shell_task(monkeypatch):
     """allow_localhost is retired (2026-09-23, governance record
     retire-allow-localhost-2026-09-23, amends sealed 9fe5e179 / gap
-    582b1e676fb3 — Loki 7173C72A finding U1). Unmocked run_shell_task must
-    refuse a row carrying the directive by name, before any sandbox is
-    built — old queue rows and a stale broker included."""
-    row = _localhost_row(network_authorization="")
-    status, result = kexec.execute_task_row(row, network_authorizer=lambda *_: False)
-    assert status == "failed"
-    assert result["error"].startswith("allow_localhost_retired:")
-    assert "9fe5e179" in result["error"]
-
-
-def test_localhost_authorizer_not_consulted_when_envelope_absent(monkeypatch):
+    582b1e676fb3 — Loki 7173C72A finding U1). execute_task_row refuses a row
+    carrying the directive by name BEFORE fleet-egress classification, so
+    neither run_shell_task nor network_authorizer is ever reached — old
+    queue rows and a stale broker included. (Loki 506FD78E F3: this replaces
+    the old test that asserted the row silently launched.)"""
+    launched = []
     consulted = []
     monkeypatch.setattr(
         kexec,
         "run_shell_task",
-        lambda *_a, **_k: ("completed", {}),
+        lambda *_a, **_k: launched.append(True) or ("completed", {"stdout": "ok"}),
     )
 
     def authorize(*args):
@@ -232,8 +207,11 @@ def test_localhost_authorizer_not_consulted_when_envelope_absent(monkeypatch):
         return False
 
     row = _localhost_row(network_authorization="")
-    status, _result = kexec.execute_task_row(row, network_authorizer=authorize)
-    assert status == "completed"
+    status, result = kexec.execute_task_row(row, network_authorizer=authorize)
+    assert status == "failed"
+    assert result["error"].startswith("allow_localhost_retired:")
+    assert "9fe5e179" in result["error"]
+    assert launched == []
     assert consulted == []
 
 
@@ -274,8 +252,10 @@ def test_network_authorizer_receives_full_row_and_envelope(monkeypatch):
     assert seen == {"row": row, "envelope": row.network_authorization}
 
 
-def test_localhost_never_consults_network_authorizer(monkeypatch):
-    """Even with an envelope present, localhost_tier is not egress — skip the gate."""
+def test_localhost_with_envelope_is_still_refused_by_name(monkeypatch):
+    """Even with a (leftover) signed envelope present, allow_localhost is
+    retired — refused by name, never routed to the authorizer at all
+    (Loki 506FD78E F3)."""
     consulted = []
     monkeypatch.setattr(
         kexec,
@@ -289,8 +269,39 @@ def test_localhost_never_consults_network_authorizer(monkeypatch):
         return False
 
     status, result = kexec.execute_task_row(row, network_authorizer=authorize)
-    assert status == "completed"
-    assert result["stdout"] == "allowed"
+    assert status == "failed"
+    assert result["error"].startswith("allow_localhost_retired:")
+    assert consulted == []
+
+
+def test_row_carrying_both_directives_is_refused_by_name_not_envelope_gate(
+    monkeypatch,
+):
+    """F3 (Loki 506FD78E): a row carrying BOTH '# allow_localhost' and
+    '# allow_net' used to fall through to the allow_net envelope gate
+    (parse_task_network's allow_localhost goes False whenever allow_net is
+    also set), and got denied there instead of by the named retirement
+    refusal. Now it is refused by name before that gate is ever reached,
+    identically to a localhost-only row."""
+    launched = []
+    consulted = []
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: launched.append(True) or ("completed", {}),
+    )
+
+    def authorize(*args):
+        consulted.append(args)
+        return True  # even a permissive authorizer must never be asked
+
+    row = _localhost_row(
+        task="curl http://127.0.0.1:11434\n# allow_localhost\n# allow_net",
+    )
+    status, result = kexec.execute_task_row(row, network_authorizer=authorize)
+    assert status == "failed"
+    assert result["error"].startswith("allow_localhost_retired:")
+    assert launched == []
     assert consulted == []
 
 
