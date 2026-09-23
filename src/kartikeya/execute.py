@@ -158,6 +158,18 @@ def run_shell_task(
     cmd_body, allow_net, allow_localhost, allow_db = _parse_task_network_directives(
         task_text
     )
+    if allow_localhost:
+        # allow_localhost is retired (operator ruling 2026-09-23, governance
+        # record retire-allow-localhost-2026-09-23; amends sealed 9fe5e179 /
+        # gap 582b1e676fb3 — Loki 7173C72A finding U1). A row that still
+        # carries the directive — an old queue row, a stale broker that
+        # hasn't picked up the willow-mcp fix — is refused here, by name,
+        # before the sandbox is ever built. It never gets host network.
+        return "failed", {"error": (
+            "allow_localhost_retired: allow_localhost was retired 2026-09-23 "
+            "(governance record retire-allow-localhost-2026-09-23, amends sealed "
+            "9fe5e179). It shared the host network namespace unfiltered; there is "
+            "no replacement yet. This row is refused, not run.")}
     blocks = _iter_fenced_blocks(cmd_body)
 
     if blocks:
@@ -227,9 +239,10 @@ def _task_type(cmd: str, row: TaskRow) -> str:
 def _fleet_egress_request(row: TaskRow, cmd: str) -> bool:
     """True when a task asks for full egress (`# allow_net`) with fleet attribution.
 
-    ``# allow_localhost`` shares the host netns (Kart localhost_tier) but is
-    not a net lease — sealed 9fe5e179 / gap 582b1e676fb3. It does not take
-    the signed-envelope gate.
+    ``# allow_localhost`` is retired (2026-09-23, amends sealed 9fe5e179 /
+    gap 582b1e676fb3): it no longer reaches this far — ``run_shell_task``
+    refuses it by name before ``execute_task_row``'s caller would even need
+    to classify it. It never took the signed-envelope gate.
     """
     from .sandbox import task_allows_network
 
@@ -279,9 +292,11 @@ def execute_task_row(
     shell task requests full egress (`# allow_net`), it is called as
     `network_authorizer(row, row.network_authorization)` BEFORE the sandbox
     launches; a falsy return denies the task (no shell runs). Kartikeya owns
-    the seam and the timing; the host owns the policy. ``# allow_localhost``
-    and tasks that request no network never consult it for a missing envelope
-    (sealed 9fe5e179).
+    the seam and the timing; the host owns the policy. Tasks that request no
+    network never consult it for a missing envelope. ``# allow_localhost`` is
+    retired (2026-09-23, amends sealed 9fe5e179 / gap 582b1e676fb3) — it
+    never reaches this authorizer at all; `run_shell_task` refuses it by name
+    first, whether the row is fresh or a stale one queued before the fix.
     """
     cmd = row.task or ""
     ttype = _task_type(cmd, row)

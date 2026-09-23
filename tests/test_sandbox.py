@@ -305,6 +305,38 @@ def test_bwrap_available_returns_bool():
     assert isinstance(sandbox.bwrap_available(), bool)
 
 
+# ── allow_localhost retirement (2026-09-23, amends sealed 9fe5e179) ─────────
+#
+# governance record retire-allow-localhost-2026-09-23; Loki 7173C72A finding
+# U1: allow_localhost shared the host network namespace unfiltered. The
+# executor-level refusal lives in kartikeya.execute.run_shell_task; these pin
+# the second lock at the lowest level — even if allow_localhost=True somehow
+# reaches build_bwrap_argv / sandbox_manifest directly, it must buy nothing.
+
+
+def test_build_bwrap_argv_allow_localhost_still_unshares_net():
+    isolated = sandbox.build_bwrap_argv(allow_net=False, allow_localhost=False)
+    still_isolated = sandbox.build_bwrap_argv(allow_net=False, allow_localhost=True)
+    assert "--unshare-net" in isolated
+    assert "--unshare-net" in still_isolated, (
+        "allow_localhost is retired — it must never omit --unshare-net"
+    )
+
+
+def test_build_bwrap_argv_allow_net_still_shares_net():
+    shared = sandbox.build_bwrap_argv(allow_net=True, allow_localhost=False)
+    assert "--unshare-net" not in shared
+
+
+def test_sandbox_manifest_allow_localhost_reports_isolated_not_localhost():
+    manifest = sandbox.sandbox_manifest(allow_net=False, allow_localhost=True)
+    assert manifest["network_mode"] == "isolated", (
+        "the manifest must not claim a 'localhost' network mode that "
+        "build_bwrap_argv no longer provides"
+    )
+    assert manifest["allow_localhost"] is False
+
+
 # ── resource caps: memory + PID limits (live-audit L-DOS-02 residual) ───────
 
 

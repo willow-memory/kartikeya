@@ -184,10 +184,15 @@ def test_network_request_denied_before_shell_launch(
     assert launched == []
 
 
-def test_localhost_without_envelope_launches(
+def test_localhost_without_envelope_does_not_consult_authorizer(
     monkeypatch,
 ):
-    """Sealed 9fe5e179: # allow_localhost is not a net lease — no signed envelope."""
+    """execute_task_row's row-classification layer never demanded a signed
+    envelope for allow_localhost — that much is unchanged. This test mocks
+    run_shell_task out, so it does NOT exercise the 2026-09-23 retirement
+    refusal; see test_localhost_row_is_refused_by_run_shell_task for that
+    (unmocked) check. Kept to pin that the authorizer gate stays skipped for
+    a directive execute_task_row itself never classified as fleet egress."""
     launched = []
     monkeypatch.setattr(
         kexec,
@@ -199,6 +204,19 @@ def test_localhost_without_envelope_launches(
     assert status == "completed"
     assert result["stdout"] == "ok"
     assert launched == [True]
+
+
+def test_localhost_row_is_refused_by_run_shell_task(monkeypatch):
+    """allow_localhost is retired (2026-09-23, governance record
+    retire-allow-localhost-2026-09-23, amends sealed 9fe5e179 / gap
+    582b1e676fb3 — Loki 7173C72A finding U1). Unmocked run_shell_task must
+    refuse a row carrying the directive by name, before any sandbox is
+    built — old queue rows and a stale broker included."""
+    row = _localhost_row(network_authorization="")
+    status, result = kexec.execute_task_row(row, network_authorizer=lambda *_: False)
+    assert status == "failed"
+    assert result["error"].startswith("allow_localhost_retired:")
+    assert "9fe5e179" in result["error"]
 
 
 def test_localhost_authorizer_not_consulted_when_envelope_absent(monkeypatch):
