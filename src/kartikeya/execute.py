@@ -65,6 +65,26 @@ def _parse_task_network_directives(task_text: str) -> tuple[str, bool, bool, boo
     return parse_task_network(task_text)
 
 
+def _localhost_retired_result() -> tuple[str, dict]:
+    """Named refusal for `# allow_localhost` (retired 2026-09-23, amends
+    sealed 9fe5e179 / gap 582b1e676fb3 — Loki 7173C72A finding U1, F3 in
+    506FD78E). One body shared by execute_task_row (catches a row before
+    fleet-egress classification — including a row that also carries
+    `# allow_net`) and run_shell_task (catches any other caller of it
+    directly)."""
+    return "failed", {
+        "error": (
+            "allow_localhost_retired: allow_localhost was retired 2026-09-23 "
+            "(governance record retire-allow-localhost-2026-09-23, amends sealed "
+            "9fe5e179). It shared the host network namespace unfiltered. For real "
+            "network, use allow_net (with its signed envelope); for local-only "
+            "reach, there is no replacement yet — a loopback-only tier "
+            "(network-off sandbox + allowlisted forwarders) is designed but not "
+            "built. This row is refused, not run."
+        )
+    }
+
+
 def trim_task_result(result, status: str = ""):
     """Drop the bulky sandbox manifest from read surfaces for successful tasks.
 
@@ -148,6 +168,7 @@ def run_shell_task(
     context: str = "poll",
 ) -> tuple[str, dict]:
     """Execute a shell-class task string. Returns (status, result)."""
+    from .sandbox import task_allows_localhost
     from .task_scan import check_kart_task
 
     blocked = check_kart_task(task_text)
@@ -155,6 +176,17 @@ def run_shell_task(
         return "failed", blocked
 
     timeout = timeout if timeout is not None else kart_timeout(context)
+    # F3 (Loki 506FD78E): check the raw directive, not parse_task_network's
+    # derived allow_localhost — that value goes False whenever allow_net is
+    # ALSO present (`(not allow_net) and task_allows_localhost(...)`), so a
+    # row carrying both directives would fall through to the allow_net
+    # envelope gate instead of being refused by name here. Both-directives
+    # rows and localhost-only rows get the identical named refusal.
+    if task_allows_localhost(task_text):
+        # allow_localhost is retired — an old queue row, a stale broker that
+        # hasn't picked up the willow-mcp fix, is refused here, by name,
+        # before the sandbox is ever built. It never gets host network.
+        return _localhost_retired_result()
     cmd_body, allow_net, allow_localhost, allow_db = _parse_task_network_directives(
         task_text
     )
@@ -227,9 +259,10 @@ def _task_type(cmd: str, row: TaskRow) -> str:
 def _fleet_egress_request(row: TaskRow, cmd: str) -> bool:
     """True when a task asks for full egress (`# allow_net`) with fleet attribution.
 
-    ``# allow_localhost`` shares the host netns (Kart localhost_tier) but is
-    not a net lease — sealed 9fe5e179 / gap 582b1e676fb3. It does not take
-    the signed-envelope gate.
+    ``# allow_localhost`` is retired (2026-09-23, amends sealed 9fe5e179 /
+    gap 582b1e676fb3): it no longer reaches this far — ``execute_task_row``
+    refuses it by name, alone or alongside ``# allow_net``, before this
+    classifier ever runs. It never took the signed-envelope gate.
     """
     from .sandbox import task_allows_network
 
@@ -279,14 +312,26 @@ def execute_task_row(
     shell task requests full egress (`# allow_net`), it is called as
     `network_authorizer(row, row.network_authorization)` BEFORE the sandbox
     launches; a falsy return denies the task (no shell runs). Kartikeya owns
-    the seam and the timing; the host owns the policy. ``# allow_localhost``
-    and tasks that request no network never consult it for a missing envelope
-    (sealed 9fe5e179).
+    the seam and the timing; the host owns the policy. Tasks that request no
+    network never consult it for a missing envelope. ``# allow_localhost`` is
+    retired (2026-09-23, amends sealed 9fe5e179 / gap 582b1e676fb3) — it is
+    refused by name below, before fleet-egress classification even runs, so
+    a row carrying it — alone or alongside ``# allow_net`` — never reaches
+    this authorizer at all (Loki 506FD78E F3: the old ordering let a
+    both-directives row fall through to the allow_net envelope gate instead
+    of a named refusal).
     """
     cmd = row.task or ""
     ttype = _task_type(cmd, row)
 
     if ttype == "shell":
+        from .sandbox import task_allows_localhost
+
+        if task_allows_localhost(cmd):
+            # Same named refusal as run_shell_task, hit here first so a
+            # both-directives row can't be routed into _fleet_egress_request
+            # / _network_denial instead (F3).
+            return _localhost_retired_result()
         if _fleet_egress_request(row, cmd):
             denial = _network_denial(row, network_authorizer)
             if denial:
@@ -295,7 +340,8 @@ def execute_task_row(
             _body, allow_net, _allow_localhost, _allow_db = (
                 _parse_task_network_directives(cmd)
             )
-            # Full egress only — localhost_tier does not need a signed envelope.
+            # Full egress only — allow_localhost is retired and never reaches
+            # here (refused by name above, before this branch).
             if allow_net and not network_authorizer(
                 row, getattr(row, "network_authorization", "") or ""
             ):

@@ -674,9 +674,14 @@ def build_bwrap_argv(
 ) -> list[str]:
     args = ["bwrap"]
     # Isolated: --unshare-net blocks all sockets (including 127.0.0.1:11434 Ollama).
-    # allow_localhost shares the host net ns so loopback services work, but does NOT
-    # mount credentials (GAP-B) — unlike allow_net.
-    if not allow_net and not allow_localhost:
+    # allow_localhost is retired (2026-09-23, amends sealed 9fe5e179 / gap
+    # 582b1e676fb3 — Loki 7173C72A finding U1): it used to share the host net ns
+    # so loopback services worked, but that shares the whole namespace, not just
+    # loopback, so it reached the public internet unfiltered too. The caller
+    # (run_shell_task) already refuses an allow_localhost row before this
+    # function is ever reached; this is the second lock — even a True value
+    # here no longer buys shared networking. Only allow_net does.
+    if not allow_net:
         args.append("--unshare-net")
     # KP2 — namespace + kernel-surface hardening.
     #  --tmpfs /tmp + /dev/shm : private scratch, not a host bind (S11, S16) — no
@@ -1104,16 +1109,16 @@ def sandbox_manifest(
         .get("PATH", "")
         .split(":")
     )
-    if allow_net:
-        network_mode = "full"
-    elif allow_localhost:
-        network_mode = "localhost"
-    else:
-        network_mode = "isolated"
+    # allow_localhost is retired (2026-09-23, amends sealed 9fe5e179): it no
+    # longer buys shared networking (build_bwrap_argv ignores it), so the
+    # manifest must not report a "localhost" mode that isn't real — that
+    # would be exactly the "empty reads as absent" dishonesty this function
+    # exists to prevent, just inverted.
+    network_mode = "full" if allow_net else "isolated"
     return {
         "engine": engine,
         "allow_net": allow_net,
-        "allow_localhost": allow_localhost and not allow_net,
+        "allow_localhost": False,
         "allow_db": allow_db,
         "network_mode": network_mode,
         "bound_rw": sorted(bound_rw),
