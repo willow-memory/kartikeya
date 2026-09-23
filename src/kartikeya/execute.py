@@ -224,11 +224,16 @@ def _task_type(cmd: str, row: TaskRow) -> str:
     return "shell"
 
 
-def _fleet_network_request(row: TaskRow, cmd: str) -> bool:
-    """True when a task crosses the network boundary with fleet attribution."""
-    from .sandbox import task_requests_shared_network
+def _fleet_egress_request(row: TaskRow, cmd: str) -> bool:
+    """True when a task asks for full egress (`# allow_net`) with fleet attribution.
 
-    if not task_requests_shared_network(cmd):
+    ``# allow_localhost`` shares the host netns (Kart localhost_tier) but is
+    not a net lease — sealed 9fe5e179 / gap 582b1e676fb3. It does not take
+    the signed-envelope gate.
+    """
+    from .sandbox import task_allows_network
+
+    if not task_allows_network(cmd):
         return False
     return bool(row.submitted_by.strip() or row.network_authorization.strip())
 
@@ -237,7 +242,7 @@ def _network_denial(
     row: TaskRow,
     authorizer: NetworkAuthorizer | None,
 ) -> dict | None:
-    """Return a denial result for a fleet-attributed network request, or None."""
+    """Return a denial result for a fleet-attributed egress request, or None."""
     if authorizer is None:
         return {"error": "network_authorization_denied: verifier unavailable"}
     if not row.submitted_by.strip():
@@ -271,25 +276,27 @@ def execute_task_row(
     WILLOW_KART_LOG_ALL=1) a forensic artifact is written and `log_dir` set.
 
     `network_authorizer` is an optional host-supplied pre-launch gate. When a
-    shell task requests network (`# allow_net` / `# allow_localhost`), it is
-    called as `network_authorizer(row, row.network_authorization)` BEFORE the
-    sandbox launches; a falsy return denies the task (no shell runs). Kartikeya
-    owns the seam and the timing; the host owns the policy. Tasks that request no
-    network never consult it.
+    shell task requests full egress (`# allow_net`), it is called as
+    `network_authorizer(row, row.network_authorization)` BEFORE the sandbox
+    launches; a falsy return denies the task (no shell runs). Kartikeya owns
+    the seam and the timing; the host owns the policy. ``# allow_localhost``
+    and tasks that request no network never consult it for a missing envelope
+    (sealed 9fe5e179).
     """
     cmd = row.task or ""
     ttype = _task_type(cmd, row)
 
     if ttype == "shell":
-        if _fleet_network_request(row, cmd):
+        if _fleet_egress_request(row, cmd):
             denial = _network_denial(row, network_authorizer)
             if denial:
                 return "failed", denial
         elif network_authorizer is not None:
-            _body, allow_net, allow_localhost, _allow_db = (
+            _body, allow_net, _allow_localhost, _allow_db = (
                 _parse_task_network_directives(cmd)
             )
-            if (allow_net or allow_localhost) and not network_authorizer(
+            # Full egress only — localhost_tier does not need a signed envelope.
+            if allow_net and not network_authorizer(
                 row, getattr(row, "network_authorization", "") or ""
             ):
                 reason = getattr(network_authorizer, "last_error", "") or "denied"

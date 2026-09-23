@@ -167,3 +167,38 @@ def test_hook_guard_maintenance_bypass(monkeypatch):
     monkeypatch.setattr(task_scan, "HOOK_GUARD_FRAGMENTS", ("host/hooks/runner.py",))
     monkeypatch.setenv("WILLOW_HOOK_MAINTENANCE", "1")
     assert task_scan.check_kart_task("cat host/hooks/runner.py") is None
+
+
+# ── systemd manager: never Kart-eligible (broker verbs only) ────────────────
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        "systemctl --user enable --now ratatosk-listen-loki.service",
+        "systemctl --user daemon-reload",
+        "busctl --user list",
+        "/usr/bin/systemctl status foo",
+        "echo ok && systemctl --user restart bar.service",
+    ],
+)
+def test_systemctl_and_busctl_are_refused(task):
+    result = task_scan.check_kart_task(task)
+    assert result is not None
+    assert result["kart_scan"]["category"] == "systemd_manager"
+    assert "unit_install_execute" in result["error"]
+    assert "unit_reload_execute" in result["error"]
+
+
+def test_systemctl_in_script_body_is_refused():
+    result = task_scan.check_kart_task(
+        "echo ok", script_body="systemctl --user status x"
+    )
+    assert result is not None
+    assert result["kart_scan"]["where"] == "script_body"
+    assert "unit_install_execute" in result["error"]
+
+
+def test_systemctl_substring_in_path_is_not_blocked():
+    # A path containing the letters must not trip the verb gate.
+    assert task_scan.check_kart_task("echo /tmp/mysystemctl-notes.txt") is None

@@ -160,21 +160,13 @@ def _localhost_row(**overrides):
     ("row", "authorizer", "error"),
     [
         (_network_row(), None, "verifier unavailable"),
-        (_localhost_row(), None, "verifier unavailable"),
         (_network_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
-        (_localhost_row(submitted_by=""), lambda *_: True, "submitted_by missing"),
         (
             _network_row(network_authorization=""),
             lambda *_: True,
             "signed envelope missing",
         ),
-        (
-            _localhost_row(network_authorization=""),
-            lambda *_: True,
-            "signed envelope missing",
-        ),
         (_network_row(), lambda *_: False, "verifier refused"),
-        (_localhost_row(), lambda *_: False, "verifier refused"),
     ],
 )
 def test_network_request_denied_before_shell_launch(
@@ -190,6 +182,41 @@ def test_network_request_denied_before_shell_launch(
     assert status == "failed"
     assert error in result["error"]
     assert launched == []
+
+
+def test_localhost_without_envelope_launches(
+    monkeypatch,
+):
+    """Sealed 9fe5e179: # allow_localhost is not a net lease — no signed envelope."""
+    launched = []
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: launched.append(True) or ("completed", {"stdout": "ok"}),
+    )
+    row = _localhost_row(network_authorization="")
+    status, result = kexec.execute_task_row(row, network_authorizer=lambda *_: False)
+    assert status == "completed"
+    assert result["stdout"] == "ok"
+    assert launched == [True]
+
+
+def test_localhost_authorizer_not_consulted_when_envelope_absent(monkeypatch):
+    consulted = []
+    monkeypatch.setattr(
+        kexec,
+        "run_shell_task",
+        lambda *_a, **_k: ("completed", {}),
+    )
+
+    def authorize(*args):
+        consulted.append(args)
+        return False
+
+    row = _localhost_row(network_authorization="")
+    status, _result = kexec.execute_task_row(row, network_authorizer=authorize)
+    assert status == "completed"
+    assert consulted == []
 
 
 def test_network_authorizer_exception_denies_before_shell_launch(monkeypatch):
@@ -229,8 +256,9 @@ def test_network_authorizer_receives_full_row_and_envelope(monkeypatch):
     assert seen == {"row": row, "envelope": row.network_authorization}
 
 
-def test_localhost_authorizer_receives_full_row_and_envelope(monkeypatch):
-    seen = {}
+def test_localhost_never_consults_network_authorizer(monkeypatch):
+    """Even with an envelope present, localhost_tier is not egress — skip the gate."""
+    consulted = []
     monkeypatch.setattr(
         kexec,
         "run_shell_task",
@@ -239,14 +267,13 @@ def test_localhost_authorizer_receives_full_row_and_envelope(monkeypatch):
     row = _localhost_row()
 
     def authorize(received_row, envelope):
-        seen["row"] = received_row
-        seen["envelope"] = envelope
-        return True
+        consulted.append((received_row, envelope))
+        return False
 
     status, result = kexec.execute_task_row(row, network_authorizer=authorize)
     assert status == "completed"
     assert result["stdout"] == "allowed"
-    assert seen == {"row": row, "envelope": row.network_authorization}
+    assert consulted == []
 
 
 def test_isolated_task_bypasses_network_authorizer(monkeypatch):
