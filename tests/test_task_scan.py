@@ -191,7 +191,9 @@ def test_systemctl_and_busctl_are_refused(task):
 
 
 def test_systemctl_in_script_body_is_refused():
-    result = task_scan.check_kart_task("echo ok", script_body="systemctl --user status x")
+    result = task_scan.check_kart_task(
+        "echo ok", script_body="systemctl --user status x"
+    )
     assert result is not None
     assert result["kart_scan"]["where"] == "script_body"
     assert "unit_install_execute" in result["error"]
