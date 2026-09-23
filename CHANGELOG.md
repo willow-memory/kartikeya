@@ -36,7 +36,6 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **scan:** refuse systemctl/busctl; localhost is not egress ([8614df6](https://github.com/willow-memory/kartikeya/commit/8614df69bc8ac0c712ee43f77fc5576f90c760fd))
 * **scan:** refuse systemctl/busctl; localhost is not egress ([b5313ee](https://github.com/willow-memory/kartikeya/commit/b5313eee61e6f7083698faf31833f1a210f16879))
 
 ## [0.3.0](https://github.com/willow-memory/kartikeya/compare/v0.2.5...v0.3.0) (2026-09-20)
