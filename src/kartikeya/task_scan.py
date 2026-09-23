@@ -66,6 +66,22 @@ _ALWAYS_BLOCK_CATEGORIES = frozenset(
     {"exfiltration", "obfuscation", "secret_access", "resource_exhaustion"}
 )
 
+# systemd user/system manager verbs are never Kart-eligible (SOIL
+# kart-vs-operator-systemctl-broker-2026-09-23): no user D-Bus in bwrap, and
+# mounting one would punch a hole into host systemd. Broker path:
+# unit_install_execute / unit_reload_execute (+ willow-mcp-unit-ops helper).
+_SYSTEMD_MANAGER_RE = re.compile(
+    r"(?:^|[\s;&|`(])(?:/bin/|/usr/bin/)?(?:systemctl|busctl)\b",
+    re.IGNORECASE,
+)
+_SYSTEMD_MANAGER_REFUSAL = (
+    "[KART-SECURITY] systemctl/busctl are never Kart-eligible "
+    "(kart-vs-operator-surface). Use unit_install_execute or "
+    "unit_reload_execute on the willow-mcp broker under a unit.install / "
+    "unit.reload envelope; enable without a desk bus goes through "
+    "willow-mcp-unit-ops."
+)
+
 # Git verbs that rewrite the WORKING TREE. Under a read-only checkout with a
 # writable .git (the fleet's WILLOW_ROOT shape since 2026-09-09) these
 # half-succeed: refs and HEAD move, files cannot, and git degrades to "carry
@@ -327,6 +343,22 @@ def check_hook_tamper(task_text: str = "", *, script_body: str = "") -> dict | N
     }
 
 
+def check_systemd_manager(task_text: str = "", *, script_body: str = "") -> dict | None:
+    """Refuse systemctl/busctl in task or script_body — broker verbs only."""
+    for where, text in (("task", task_text or ""), ("script_body", script_body or "")):
+        if text and _SYSTEMD_MANAGER_RE.search(text):
+            return {
+                "error": _SYSTEMD_MANAGER_REFUSAL,
+                "kart_scan": {
+                    "category": "systemd_manager",
+                    "severity": SEV_CRITICAL,
+                    "message": "systemctl/busctl refused; use unit_install_execute / unit_reload_execute",
+                    "where": where,
+                },
+            }
+    return None
+
+
 def check_kart_task(task_text: str = "", *, script_body: str = "") -> dict | None:
     """
     Return an error dict if the task should not run/queue, else None.
@@ -337,6 +369,10 @@ def check_kart_task(task_text: str = "", *, script_body: str = "") -> dict | Non
     tamper = check_hook_tamper(task_text, script_body=script_body)
     if tamper:
         return tamper
+
+    systemd = check_systemd_manager(task_text, script_body=script_body)
+    if systemd:
+        return systemd
 
     rewrite = check_tree_rewrite(task_text)
     if rewrite:
