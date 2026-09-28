@@ -274,3 +274,52 @@ def test_leaf_is_killed_before_it_is_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox.os, "rmdir", rmdir)
     assert sandbox._kill_and_remove_leaf(str(leaf)) is True
     assert events == ["kill", "rmdir"]
+
+
+# ── setup failure between leaf creation and the main try ────────────────────
+
+
+@pytest.mark.parametrize("where", ["bash", "argv"])
+def test_leaf_is_removed_when_setup_raises_before_launch(
+    parent, spies, monkeypatch, where
+):
+    # The leaf exists as soon as limits are resolved. If the argv build or
+    # the bash lookup raises before the main try, the error still reaches the
+    # caller, but the leaf is not left behind.
+    killed, removed = spies
+    monkeypatch.delenv("WILLOW_KART_NO_BWRAP", raising=False)
+
+    def boom(*a, **k):
+        raise RuntimeError(f"{where} exploded")
+
+    target = "_sandbox_bash" if where == "bash" else "build_bwrap_argv"
+    monkeypatch.setattr(sandbox, target, boom)
+    with pytest.raises(RuntimeError, match="exploded"):
+        sandbox.run_shell("echo hi", timeout=10)
+    assert len(killed) == 1 and removed == killed
+    assert _leaves(parent) == []
+
+
+def test_status_file_is_closed_when_setup_raises_after_opening_it(
+    parent, spies, monkeypatch
+):
+    killed, _ = spies
+    monkeypatch.delenv("WILLOW_KART_NO_BWRAP", raising=False)
+    monkeypatch.setattr(sandbox, "_bwrap_supports_json_status", lambda: True)
+    monkeypatch.setattr(
+        sandbox, "build_bwrap_argv", lambda **k: []
+    )  # prefix[0] -> IndexError
+    opened = []
+    real_tf = sandbox.tempfile.TemporaryFile
+
+    def tf(*a, **k):
+        f = real_tf(*a, **k)
+        opened.append(f)
+        return f
+
+    monkeypatch.setattr(sandbox.tempfile, "TemporaryFile", tf)
+    with pytest.raises(IndexError):
+        sandbox.run_shell("echo hi", timeout=10)
+    assert len(opened) == 1 and opened[0].closed
+    assert len(killed) == 1
+    assert _leaves(parent) == []
