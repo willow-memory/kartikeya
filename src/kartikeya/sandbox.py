@@ -37,7 +37,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import cgroup_setup
+from . import cgroup_setup, landlock
 
 try:
     import resource as _resource  # POSIX only
@@ -1591,6 +1591,24 @@ def run_shell(
     cmd = _rtk_rewrite(cmd, load_sandbox_config())
     rtk_rewritten = cmd != original_cmd
 
+    # Landlock (KART_LANDLOCK): decided before any cgroup leaf exists, so an
+    # enforce-mode refusal has nothing to clean up. None = not requested.
+    landlock_state: str | None = None
+    landlock_mode = landlock.landlock_mode()
+    landlock_abi = landlock.landlock_abi() if landlock_mode != "off" else None
+    if landlock_mode == "enforce" and not landlock_abi:
+        return {
+            "stdout": "",
+            "stderr": "KART_LANDLOCK=enforce but this kernel has no Landlock",
+            "elapsed_s": round(time.time() - started, 2),
+            "error": "landlock_unavailable",
+            "sandbox": "none",
+            "landlock": "unsupported",
+        }
+    if landlock_mode == "auto" and not landlock_abi:
+        landlock.warn_unsupported_once()
+        landlock_state = "unsupported"
+
     limits = _resource_limits()
     limits_prefix = cleanup = None
     resource_mode = "none"
@@ -1634,10 +1652,27 @@ def run_shell(
                 fd = status_file.fileno()
                 prefix = [prefix[0], "--json-status-fd", str(fd)] + prefix[1:]
                 pass_fds = (fd,)
-            full = prefix + ["--", bash, "-c", cmd]
+            inner = [bash, "-c", cmd]
+            if landlock_abi:
+                ll_rw, ll_ro = landlock.binds_from_bwrap_argv(prefix)
+                inner = landlock.wrap_argv(
+                    inner, landlock.landlock_spec(ll_rw, ll_ro, bwrap=True)
+                )
+            full = prefix + ["--", *inner]
             sandbox = "bwrap"
         else:
             full = argv
+            if landlock_abi:
+                ll_rw: list[str] = []
+                ll_ro: list[str] = []
+                for host, _container, read_only in collect_bind_mounts():
+                    (ll_ro if read_only else ll_rw).append(str(host))
+                ll_ro += [str(p) for p in collect_mcp_trust_ro_overlays()]
+                full = landlock.wrap_argv(
+                    full, landlock.landlock_spec(ll_rw, ll_ro, bwrap=False)
+                )
+        if landlock_abi:
+            landlock_state = f"abi{landlock_abi}"
         if limits_prefix:
             full = limits_prefix + full
     except BaseException:
@@ -1723,9 +1758,18 @@ def run_shell(
             and _CGROUP_JOIN_FAILED in (stderr or "")
         ):
             out["error"] = "cgroup_join_failed"
+        if landlock_state is not None:
+            out["landlock"] = landlock_state
+        # The launcher refused to run the task unconfined.
+        if (
+            landlock_abi
+            and proc.returncode == landlock.LANDLOCK_FAILED_EXIT
+            and landlock.LANDLOCK_FAILED in (stderr or "")
+        ):
+            out["error"] = "landlock_failed"
         return out
     except subprocess.TimeoutExpired as e:
-        return {
+        timed_out = {
             "returncode": -1,
             "stdout": _timeout_text(e.stdout),
             "stderr": _timeout_text(e.stderr),
@@ -1733,8 +1777,11 @@ def run_shell(
             "error": "timeout",
             "sandbox": sandbox,
         }
+        if landlock_state is not None:
+            timed_out["landlock"] = landlock_state
+        return timed_out
     except Exception as e:  # noqa: BLE001 — every failure to launch becomes a result row, never an exception out of the runner
-        return {
+        failed = {
             "returncode": -1,
             "stdout": "",
             "stderr": str(e),
@@ -1742,6 +1789,9 @@ def run_shell(
             "error": str(e),
             "sandbox": sandbox,
         }
+        if landlock_state is not None:
+            failed["landlock"] = landlock_state
+        return failed
     finally:
         if cleanup is not None:
             cleanup()
@@ -1803,6 +1853,8 @@ def run_shell_result_for_task(
     # task that ran without the memory cap the operator expected.
     if raw.get("resource_limit"):
         result["resource_limit"] = raw["resource_limit"]
+    if raw.get("landlock"):
+        result["landlock"] = raw["landlock"]
     if raw.get("error"):
         result["error"] = raw["error"]
     # Uniform error capture: every failed task carries a non-empty, human-readable
