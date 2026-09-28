@@ -1330,6 +1330,14 @@ def _try_make_cgroup(limits: dict) -> str | None:
     """
     parent, unusable = cgroup_setup.cgroup_parent_state()
     if not parent:
+        if unusable and unusable == str(cgroup_setup.slice_unit_path()):
+            raise CgroupSetupError(
+                f"kart.slice is installed ({unusable}) but is not running, so "
+                "there is no cgroup to cap this task: start it (`systemctl "
+                "--user start kart.slice`, or `kartikeya setup-cgroup`), or, "
+                "if cgroup mode is not wanted on this host, remove that unit "
+                "file to run with rlimit caps instead"
+            )
         if unusable:
             raise CgroupSetupError(
                 f"cgroup parent {unusable} is configured but is not a usable "

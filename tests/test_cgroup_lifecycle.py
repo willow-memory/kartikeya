@@ -295,7 +295,9 @@ def test_installed_but_stopped_kart_slice_refuses_the_task(tmp_path, monkeypatch
     marker = tmp_path / "ran"
     result = sandbox.run_shell(f"touch {marker}", timeout=10)
     assert result["error"] == "cgroup_setup_failed", result
+    # The refusal names the unit file and both ways out.
     assert str(unit) in result["stderr"]
+    assert "not running" in result["stderr"] and "remove" in result["stderr"]
     assert not marker.exists()
 
 
