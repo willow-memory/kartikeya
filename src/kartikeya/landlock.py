@@ -398,6 +398,10 @@ for path in (norm(p) for p in spec["rw"]):
     except OSError as e:
         fail("cannot carve %s: %s" % (path, e))
     try:
+        # The bind root was stat'd into on_way by name; the fd must be the
+        # same directory, or the root was swapped in between.
+        if ident(os.fstat(dfd)) not in on_way:
+            fail("%s changed while carving" % path)
         carve(dfd, path, on_way)
     finally:
         os.close(dfd)

@@ -20,8 +20,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from kartikeya import landlock, sandbox
 from kartikeya.execute import run_shell_task
 
+# CI sets KART_REQUIRE_SANDBOX=1 on Linux: there a missing Landlock or a bwrap
+# that cannot start fails the tests instead of skipping them, since a skip
+# reads as green and would hide that the confinement was never exercised.
+REQUIRE_SANDBOX = os.environ.get("KART_REQUIRE_SANDBOX") == "1"
+
 needs_landlock = pytest.mark.skipif(
-    landlock.landlock_abi() is None, reason="kernel has no Landlock"
+    landlock.landlock_abi() is None and not REQUIRE_SANDBOX,
+    reason="kernel has no Landlock",
 )
 
 
@@ -221,9 +227,22 @@ def _bwrap_works() -> bool:
         return False
 
 
+def require_bwrap() -> None:
+    if not _bwrap_works():
+        if REQUIRE_SANDBOX:
+            pytest.fail("bwrap cannot start, and KART_REQUIRE_SANDBOX=1")
+        pytest.skip("bwrap cannot start here")
+
+
+@pytest.mark.skipif(not REQUIRE_SANDBOX, reason="only where CI requires it")
+def test_the_required_sandbox_is_really_there():
+    assert landlock.landlock_abi() is not None, "kernel has no Landlock"
+    require_bwrap()
+
+
 @needs_landlock
-@pytest.mark.skipif(not _bwrap_works(), reason="bwrap cannot start here")
 def test_an_ordinary_task_still_works_under_bwrap_with_landlock(monkeypatch):
+    require_bwrap()
     # The risk of a second lock is breaking tasks bwrap allowed. Under bwrap
     # every rule comes from bwrap's own argv, so an ordinary task (read /usr,
     # use the private /tmp, write and read back) must be unaffected.
@@ -569,3 +588,56 @@ def test_an_unlistable_directory_deeper_in_the_carve_refuses_the_task(
         git.chmod(0o755)
     assert result["error"] == "landlock_failed", result
     assert not marker.exists()
+
+
+@needs_landlock
+def test_a_directory_swapped_in_mid_walk_refuses_the_task(tmp_path):
+    # F8: between classifying an entry (fstat of its O_PATH fd) and reopening
+    # it for listing, a concurrent task swaps the read-only directory into
+    # its slot. Carving it as if it were the checked directory would give
+    # its entries read-write; the launcher re-checks the inode and refuses.
+    # The race is injected into a copy of the launcher, at that exact point.
+    rw = tmp_path / "rw"
+    locked = rw / "x" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "f").write_text("orig\n")
+    hook = "                    sub = os.open(name, DIR_FLAGS, dir_fd=dfd)"
+    assert hook in landlock.LAUNCHER
+    race = (
+        f"                    os.rename({str(rw / 'x')!r}, {str(rw / 'x.old')!r})\n"
+        f"                    os.rename({str(rw / 'x.old' / 'locked')!r}, {str(rw / 'x')!r})\n"
+    )
+    raced = landlock.LAUNCHER.replace(hook, race + hook, 1)
+    spec = landlock.landlock_spec([str(rw)], ["/usr", str(locked)], bwrap=False)
+    probe = f"echo EVIL > {rw}/x/f"
+    argv = landlock.wrap_argv(["/bin/sh", "-c", probe], spec)
+    argv[argv.index(landlock.LAUNCHER)] = raced
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    assert out.returncode == landlock.LANDLOCK_FAILED_EXIT, out
+    assert "changed while carving" in out.stderr, out
+    assert (rw / "x" / "f").read_text() == "orig\n"  # the moved read-only dir
+
+
+@needs_landlock
+def test_a_bind_root_swapped_before_carving_refuses_the_task(tmp_path):
+    # The bind root is stat'd by name into on_way, then opened: a swap in
+    # between would carve the read-only directory as if it were the root.
+    base = tmp_path / "base"
+    rw = base / "rw"
+    locked = rw / "x" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "f").write_text("orig\n")
+    hook = "        dfd = os.open(path, DIR_FLAGS)"
+    assert hook in landlock.LAUNCHER
+    race = (
+        f"        os.rename({str(rw)!r}, {str(base / 'rw.old')!r})\n"
+        f"        os.rename({str(base / 'rw.old' / 'x' / 'locked')!r}, {str(rw)!r})\n"
+    )
+    raced = landlock.LAUNCHER.replace(hook, race + hook, 1)
+    spec = landlock.landlock_spec([str(rw)], ["/usr", str(locked)], bwrap=False)
+    argv = landlock.wrap_argv(["/bin/sh", "-c", f"echo EVIL > {rw}/f"], spec)
+    argv[argv.index(landlock.LAUNCHER)] = raced
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    assert out.returncode == landlock.LANDLOCK_FAILED_EXIT, out
+    assert "changed while carving" in out.stderr, out
+    assert (rw / "f").read_text() == "orig\n"  # the moved read-only dir
