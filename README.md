@@ -89,6 +89,23 @@ memory cap.
 worker --slots N` overrides either. Like `KART_CGROUP_PARENT`, set these in the
 worker unit's `Environment=`, then restart it.
 
+**Landlock (second filesystem lock):** `KART_LANDLOCK` puts a kernel Landlock
+ruleset behind bwrap, allowing only the paths bwrap mounts (read-write binds
+writable, read-only binds read and execute). In plain mode
+(`WILLOW_KART_NO_BWRAP=1`) it is the only filesystem confinement, and the host's
+`/tmp` is not granted, so give tasks a writable bind for scratch.
+
+- `off` (default): unchanged.
+- `auto`: apply when the kernel supports Landlock (5.13+); otherwise run without
+  it, marked `landlock: "unsupported"` in the result and logged once.
+- `enforce`: apply, and refuse the task (`landlock_unavailable`) when the kernel
+  has no Landlock.
+
+In both `auto` and `enforce`, a failure to apply the ruleset refuses the task
+(`landlock_failed`); it never runs unconfined. The result's `landlock` field
+records the ABI version that confined it. Try `auto` on one worker before
+turning it on everywhere.
+
 _Coming with stage 2 — once the worker core lands, this section documents
 `kartikeya worker` end to end (submit → worker runs → poll)._
 
