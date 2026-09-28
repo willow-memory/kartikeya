@@ -31,6 +31,14 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.3.3](https://github.com/willow-memory/kartikeya/compare/v0.3.2...v0.3.3) (2026-09-28)
+
+
+### Fixed
+
+* control-character set written explicitly (CodeQL py/overly-large-range) ([75d2419](https://github.com/willow-memory/kartikeya/commit/75d24194e23aeba1fe1c89a198b0bd452aa27f76))
+* Kart task scanner reads every line and judges each command ([74222ab](https://github.com/willow-memory/kartikeya/commit/74222abeda14e9f4469f92a3ffe8189b2125244e))
+
 ## [0.3.2](https://github.com/willow-memory/kartikeya/compare/v0.3.1...v0.3.2) (2026-09-23)
 
 
