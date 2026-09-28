@@ -384,6 +384,9 @@ def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatc
     # No delegated parent → in-sandbox prlimit/ulimit wrap, no host-side prefix.
     monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
     monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
+    monkeypatch.setattr(
+        sandbox.cgroup_setup, "cgroup_parent_state", lambda: (None, None)
+    )
     prefix, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024**2, "pids": 64})
     assert mode == "rlimit"
     assert prefix is None and cleanup is None
@@ -461,6 +464,9 @@ def _delegated_parent(tmp_path, monkeypatch):
     parent = tmp_path / "kart.slice"
     parent.mkdir()
     monkeypatch.setattr(
+        sandbox.cgroup_setup, "cgroup_parent_state", lambda: (str(parent), None)
+    )
+    monkeypatch.setattr(
         sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: str(parent)
     )
     return parent
@@ -496,7 +502,8 @@ def test_cgroup_leaf_creation_failure_refuses_the_task(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox.os, "mkdir", boom)
     result = sandbox.run_shell(f"touch {marker}", timeout=10)
     assert result["error"] == "cgroup_setup_failed", result
-    assert result["returncode"] != 0
+    # Refused before running: no returncode at all.
+    assert "returncode" not in result
     assert result["resource_limit"] == "cgroup"
     assert not marker.exists()
     status, _ = sandbox.run_shell_result_for_task(f"touch {marker}", timeout=10)
@@ -544,6 +551,9 @@ def test_large_va_small_rss_survives_rlimit_fallback(monkeypatch):
     monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
     monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
     monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
+    monkeypatch.setattr(
+        sandbox.cgroup_setup, "cgroup_parent_state", lambda: (None, None)
+    )
     monkeypatch.setenv("KART_MEM_MAX", "512M")
     monkeypatch.delenv("KART_RLIMIT_USE_AS", raising=False)
     result = sandbox.run_shell(_LARGE_VA_CMD, timeout=30)
@@ -558,6 +568,9 @@ def test_rlimit_as_opt_in_contains_memory_hog(monkeypatch):
     monkeypatch.setenv("KART_MEM_MAX", "512M")
     monkeypatch.setenv("KART_RLIMIT_USE_AS", "1")
     monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
+    monkeypatch.setattr(
+        sandbox.cgroup_setup, "cgroup_parent_state", lambda: (None, None)
+    )
 
     hog = sandbox.run_shell(
         "python3 -c 'x = bytearray(900*1024*1024); print(len(x))'", timeout=30

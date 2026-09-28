@@ -118,15 +118,29 @@ def enable_subtree_control(parent: str) -> str | None:
     return None
 
 
-def resolve_cgroup_parent() -> str | None:
-    """Best delegated parent: explicit env, else auto-detected kart.slice."""
+def cgroup_parent_state() -> tuple[str | None, str | None]:
+    """``(usable, configured_but_unusable)`` cgroup parents.
+
+    ``usable`` is the best delegated parent: an explicit ``KART_CGROUP_PARENT``,
+    else the auto-detected kart.slice. When neither is usable,
+    ``configured_but_unusable`` names what the operator did configure (the
+    env var, or a kart.slice that exists but has lost its delegation, e.g.
+    subtree_control reset by a daemon-reload), so a caller can refuse rather
+    than quietly run without the memory cap it was set up for. Both are None
+    when no cgroup parent is configured at all.
+    """
     explicit = os.environ.get("KART_CGROUP_PARENT", "").strip()
     if explicit and is_delegated_cgroup_parent(explicit):
-        return explicit
+        return explicit, None
     auto = systemd_cgroup_path()
     if auto and is_delegated_cgroup_parent(auto):
-        return auto
-    return None
+        return auto, None
+    return None, (explicit or auto or None)
+
+
+def resolve_cgroup_parent() -> str | None:
+    """Best delegated parent: explicit env, else auto-detected kart.slice."""
+    return cgroup_parent_state()[0]
 
 
 def cgroup_status() -> dict:
