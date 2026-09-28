@@ -15,9 +15,11 @@ schema (see the willow-mcp integration in docs/DESIGN.md §3).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -153,12 +155,27 @@ class SqliteTaskQueue(TaskQueue):
                     "WHERE status='running' AND claimed_at IS NULL"
                 )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """A connection for one operation, closed when the block exits.
+
+        ``with sqlite3.connect(...)`` only commits or rolls back; it never
+        closes. CPython's refcounting usually closed these anyway, but not
+        deterministically (a traceback holding the frame keeps it open) and
+        not quietly (3.13 raises ResourceWarning: unclosed database). Each
+        WAL connection holds three fds (db, -wal, -shm), so a worker or test
+        run could exhaust a 1024-fd limit. Closing also rolls back any
+        transaction a raise left open (e.g. after BEGIN IMMEDIATE).
+        """
         conn = sqlite3.connect(self._path, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def claim_pending(
         self, agent: str, limit: int, lane: str | None = None
