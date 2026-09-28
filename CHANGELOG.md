@@ -36,7 +36,12 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Added
 
-* **sandbox:** Landlock as a second filesystem lock behind bwrap ([88ff66c](https://github.com/willow-memory/kartikeya/commit/88ff66c7843de7229de7464300dbe158926ce771))
+* **sandbox:** Landlock as a second filesystem lock behind bwrap ([479be82](https://github.com/willow-memory/kartikeya/commit/479be821ffe5d89df37eee16c640aaf848b4187d))
+
+
+### Fixed
+
+* **landlock:** carve read-only paths out of read-write binds; isolate the launcher ([70ae2db](https://github.com/willow-memory/kartikeya/commit/70ae2db186b5d008855692c9a01f2025d022c2f3))
 
 ## [0.4.6](https://github.com/willow-memory/kartikeya/compare/v0.4.5...v0.4.6) (2026-09-28)
 
