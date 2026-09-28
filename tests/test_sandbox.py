@@ -424,9 +424,8 @@ def test_run_shell_passes_no_preexec_fn(monkeypatch):
 
 @pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="POSIX sh")
 def test_cgroup_join_wrapper_writes_own_pid_then_execs(tmp_path):
-    # The wrapper must write the pid that then becomes the exec'd command
-    # (so bwrap itself starts in the cgroup), and must not abort the task
-    # when the write fails.
+    # The wrapper must write the pid that then becomes the exec'd command, so
+    # bwrap itself starts in the cgroup.
     import subprocess
 
     procs = tmp_path / "cgroup.procs"
@@ -437,14 +436,103 @@ def test_cgroup_join_wrapper_writes_own_pid_then_execs(tmp_path):
         check=True,
     )
     assert procs.read_text().strip() == out.stdout.strip()
+
+
+@pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="POSIX sh")
+def test_cgroup_join_wrapper_refuses_when_the_join_fails(tmp_path):
+    # Gap 62b31dd2429a: a failed join must not exec the task outside its
+    # cgroup. It exits 125 with the marker and never runs the command.
+    import subprocess
+
     missing = tmp_path / "no-such-dir" / "cgroup.procs"
+    marker = tmp_path / "ran"
     out = subprocess.run(
-        ["/bin/sh", "-c", sandbox._CGROUP_JOIN_SH, str(missing), "echo", "ran"],
+        ["/bin/sh", "-c", sandbox._CGROUP_JOIN_SH, str(missing), "touch", str(marker)],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
-    assert out.stdout == "ran\n" and out.stderr == ""
+    assert out.returncode == sandbox._CGROUP_JOIN_EXIT
+    assert sandbox._CGROUP_JOIN_FAILED in out.stderr
+    assert not marker.exists()
+
+
+def _delegated_parent(tmp_path, monkeypatch):
+    parent = tmp_path / "kart.slice"
+    parent.mkdir()
+    monkeypatch.setattr(
+        sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: str(parent)
+    )
+    return parent
+
+
+def test_cgroup_leaves_are_distinct_when_slots_start_together(tmp_path, monkeypatch):
+    # Gap 879c09c6e723: leaves were named kart-<pid>-<ms % 100000>, so two
+    # slots of one worker starting in the same millisecond collided and the
+    # second ran uncapped. Freeze the clock to force the same millisecond.
+    parent = _delegated_parent(tmp_path, monkeypatch)
+    monkeypatch.setattr(sandbox.time, "time", lambda: 1_790_000_000.123)
+    limits = {"mem": 4096, "pids": 8}
+    first = sandbox._try_make_cgroup(limits)
+    second = sandbox._try_make_cgroup(limits)
+    assert first != second
+    assert sorted(p.name for p in parent.iterdir()) == sorted(
+        os.path.basename(p) for p in (first, second)
+    )
+    assert (Path(second) / "memory.max").read_text() == "4096"
+
+
+def test_cgroup_leaf_creation_failure_refuses_the_task(tmp_path, monkeypatch):
+    # A delegated parent means cgroup mode was asked for; if the leaf cannot
+    # be made the task is refused, never run without its memory cap.
+    _delegated_parent(tmp_path, monkeypatch)
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.delenv("WILLOW_KART_NO_RLIMIT", raising=False)
+    marker = tmp_path / "ran"
+
+    def boom(path, *a, **k):
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(sandbox.os, "mkdir", boom)
+    result = sandbox.run_shell(f"touch {marker}", timeout=10)
+    assert result["error"] == "cgroup_setup_failed", result
+    assert result["returncode"] != 0
+    assert result["resource_limit"] == "cgroup"
+    assert not marker.exists()
+    status, _ = sandbox.run_shell_result_for_task(f"touch {marker}", timeout=10)
+    assert status == "failed"
+    assert not marker.exists()
+
+
+def test_cgroup_limit_write_failure_refuses_and_removes_the_leaf(tmp_path, monkeypatch):
+    parent = _delegated_parent(tmp_path, monkeypatch)
+    real_open = open
+
+    def failing_open(path, *a, **k):
+        if str(path).endswith("memory.max"):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", failing_open)
+    with pytest.raises(sandbox.CgroupSetupError):
+        sandbox._try_make_cgroup({"mem": 4096, "pids": 8})
+    assert list(parent.iterdir()) == []
+
+
+@pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="POSIX sh")
+def test_cgroup_join_failure_refuses_the_task_end_to_end(tmp_path, monkeypatch):
+    # The leaf is handed over, but joining it fails in the child (here: the
+    # leaf directory does not exist, so its cgroup.procs cannot be written).
+    # run_shell reports cgroup_join_failed and the task body never runs.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.delenv("WILLOW_KART_NO_RLIMIT", raising=False)
+    leaf = tmp_path / "leaf-without-procs"
+    monkeypatch.setattr(sandbox, "_try_make_cgroup", lambda limits: str(leaf))
+    marker = tmp_path / "ran"
+    result = sandbox.run_shell(f"touch {marker}", timeout=10)
+    assert result["error"] == "cgroup_join_failed", result
+    assert result["returncode"] == sandbox._CGROUP_JOIN_EXIT
+    assert not marker.exists()
 
 
 _LARGE_VA_CMD = (
