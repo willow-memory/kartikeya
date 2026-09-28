@@ -1103,7 +1103,6 @@ def test_a_quote_split_protected_path_is_refused(monkeypatch):
         "cat <<'EOF'\nd = {\"systemctl\": 1}\nEOF",
         'cat <<\'EOF\'\n"""systemctl+git helper"""\nEOF',
         "cat <<'EOF'\nit's a \"systemctl\" note\nx = 'systemctl'\nEOF",
-        "cat <<'Q'\nsys\\\ntemctl\nQ",
         'echo "sys\\\ntemctl"',
         'grep -c "systemctl" log.txt',
         "x='systemctl'",
@@ -1112,6 +1111,10 @@ def test_a_quote_split_protected_path_is_refused(monkeypatch):
         "[ 'systemctl' = \"$u\" ] && echo y",  # after `[`, not a command
         "echo ok # never sys''temctl here",  # a comment is not run
         "echo call('systemctl')",  # `call(` is text, not a subshell
+        # Python and JSON data in a heredoc: a lone quoted word followed by
+        # `,` `:` `]` `}` is data, and a word with whitespace is never run.
+        'cat <<\'EOF\'\nCMDS = [\n    "systemctl",\n    "--user",\n]\nEOF',
+        "cat <<'EOF'\nif unit == 'systemctl':\n    pass\nEOF",
     ],
 )
 def test_ordinary_quoting_is_still_allowed(task):
@@ -1186,24 +1189,57 @@ def test_the_text_as_written_is_still_scanned(task):
     assert task_scan.check_kart_task(task) is not None, task
 
 
-# Loki 6FB4C5F1. F6: quotes pair as bash pairs them, per command line, so a
-# stray quote earlier on (in heredoc data, a comment, an escaped `\"`) does
-# not shift the pairing of a later split word. F7: a quoted word in command
-# position is run, not mentioned. F2 edges: a continuation inside double
-# quotes, and a shell-fed heredoc's payload.
+# Loki 6FB4C5F1 and F78F58D7. The mention checks read several views and any
+# of them refuses (`_mention_views`): the text as written, the whole text
+# unquoted at once (a string spanning lines pairs as bash pairs it), and each
+# line unquoted on its own, with and without backslash-newlines removed (a
+# stray quote on one line does not shift the next). Heredoc bodies are always
+# read: whether bash runs them is not decided by the scanner.
+_S = "sys''temctl --user restart x"
+_Q = "'systemctl' --user restart x"
+_H = "cat host/hooks/run''ner.py"
+
+
 @pytest.mark.parametrize(
     "task",
     [
-        "cat <<EOF\nit's fine\nEOF\nsys''temctl --user restart x",
-        "# don't\nsys''temctl --user restart x",
-        'echo "\\""; sys\'\'temctl --user restart x',
-        "'systemctl' --user restart x",
+        # F6: a stray quote earlier on
+        "cat <<EOF\nit's fine\nEOF\n" + _S,
+        "# don't\n" + _S,
+        'echo "\\""; ' + _S,
+        # F7: a quoted word in command position is run
+        _Q,
         '"systemctl" --user restart x',
-        "true; 'systemctl' --user restart x",
+        "true; " + _Q,
         "$'systemctl' --user restart x",
         "'/usr/bin/systemctl' --user restart x",
         "if 'systemctl' is-active x; then echo y; fi",
+        # F8: a quoted string spanning lines
+        'echo "it\'s\nok"; ' + _S,
+        "echo 'a\nb'; " + _S,
+        # F9: heredoc bodies bash runs, however the heredoc is spelled
+        "cat <<EOF | bash\n" + _S + "\nEOF",
+        "cat <<EOF | sh\n" + _S + "\nEOF",
+        "bash - <<EOF\n" + _S + "\nEOF",
+        "sh -euo pipefail <<EOF\n" + _S + "\nEOF",
+        "bash --norc <<EOF\n" + _S + "\nEOF",
+        "bash 2>&1 <<EOF\n" + _S + "\nEOF",
+        "echo \\<<EOF x\n" + _S,
+        'echo "a\\" <<EOF x"\n' + _S,
+        "cat <<'Q'\nx\\\nQ\n" + _S + "\nQ",
+        "cat <<EOF\nx\n" + _S,  # unterminated heredoc (N14)
+        # F10: command position after operators, assignments, redirections
+        "true;(" + _Q + ")",
+        "true&&(" + _Q + ")",
+        "{ " + _Q + "; }",
+        "X=1 " + _Q,
+        "2>/dev/null " + _Q,
+        "a) " + _Q,
+        # N6: `$'..'` escapes do not end the string early
+        "echo $'it\\'s'; " + _S,
+        # F2: continuations, including after a stray quote (the per-line view)
         '"sys\\\ntemctl" --user restart x',
+        "cat <<EOF\nit's fine\nEOF\nsys\\\ntemctl --user restart x",
         "bash <<'Q'\nsys\\\ntemctl x\nQ",
     ],
 )
@@ -1215,40 +1251,42 @@ def test_a_quoted_or_split_systemctl_that_bash_runs_is_refused(task):
 
 @pytest.mark.parametrize(
     "setup",
-    ["cat <<EOF\nit's fine\nEOF\n", "# don't\n"],
+    ["cat <<EOF\nit's fine\nEOF\n", "# don't\n", 'echo "\\""; ', "echo 'a\nb'; "],
 )
 def test_a_stray_quote_does_not_hide_a_split_protected_path(setup, monkeypatch):
     monkeypatch.setattr(task_scan, "HOOK_GUARD_FRAGMENTS", ("host/hooks/runner.py",))
-    refusal = task_scan.check_kart_task(setup + "cat host/hooks/run''ner.py")
+    refusal = task_scan.check_kart_task(setup + _H)
     assert refusal is not None
     assert refusal["kart_scan"]["category"] == "hook_tamper"
 
 
 @pytest.mark.parametrize(
-    ("line", "unquoted"),
+    ("text", "unquoted"),
     [
         ("sys''temctl x", "systemctl x"),
         ("c'u'rl -x", "curl -x"),
         ("$'cu'rl", "curl"),
         ("run\\ner.py", "runner.py"),
         ("'systemctl' x", "systemctl x"),  # command position: run
+        ("X=1 'systemctl' x", "X=1 systemctl x"),
+        ("2>/dev/null 'systemctl' x", "2>/dev/null systemctl x"),
+        ("> out 'systemctl' x", "> out systemctl x"),
         ("grep 'systemctl' x", "grep 'systemctl' x"),  # an argument: a mention
         ('d = ["systemctl", "x"]', 'd = ["systemctl", "x"]'),
-        ('echo "a\\"b" c', 'echo "a\\"b" c'),  # one quoted word, as written
+        ('{"systemctl": 1}', '{"systemctl": 1}'),  # data
+        ("'systemctl x' y", "'systemctl x' y"),  # whitespace: not a command name
+        ('echo "a\\"b" c', 'echo "a\\"b" c'),
         ('echo "\\""; sys\'\'temctl', 'echo "\\""; systemctl'),
-        ("echo x # 'systemctl'", "echo x # 'systemctl'"),
+        ("echo x # 'systemctl'\n'systemctl' y", "echo x # 'systemctl'\nsystemctl y"),
+        ("echo 'a\nb'; sys''temctl", "echo 'a\nb'; systemctl"),
         ("it's", "it's"),
     ],
 )
-def test_unquote_line(line, unquoted):
-    assert task_scan._unquote_line(line) == unquoted
+def test_unquote(text, unquoted):
+    assert task_scan._unquote(text) == unquoted
 
 
-def test_heredoc_payload_is_not_a_command_line_unless_a_shell_reads_it():
-    text = "cat <<'A'\ndata 'x'\nA\nbash <<B\nrun 'y'\nB\necho z"
-    assert task_scan._command_lines(text) == [
-        "cat <<'A'",
-        "bash <<B",
-        "run 'y'",
-        "echo z",
-    ]
+def test_mention_views_include_the_text_as_written():
+    views = task_scan._mention_views("grep 'x' y\nsys''temctl")
+    assert views[0] == "grep 'x' y\nsys''temctl"
+    assert any("systemctl" in v for v in views[1:])
