@@ -31,6 +31,13 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.4.6](https://github.com/willow-memory/kartikeya/compare/v0.4.5...v0.4.6) (2026-09-28)
+
+
+### Fixed
+
+* **cgroup:** an installed but stopped kart.slice counts as configured ([976963e](https://github.com/willow-memory/kartikeya/commit/976963e31991ad5bbe6952b1ce8e4951578ea396))
+
 ## [0.4.5](https://github.com/willow-memory/kartikeya/compare/v0.4.4...v0.4.5) (2026-09-28)
 
 
