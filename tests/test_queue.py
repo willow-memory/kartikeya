@@ -6,11 +6,14 @@ is recorded correctly.
 """
 
 import ast
+import contextlib
 import dataclasses
 import sqlite3
 import sys
 import threading
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -112,7 +115,7 @@ def test_signed_network_authorization_round_trips(tmp_path):
 
 def test_existing_sqlite_schema_migrates_without_guessing_authority(tmp_path):
     db = tmp_path / "legacy.db"
-    with sqlite3.connect(db) as conn:
+    with contextlib.closing(sqlite3.connect(db)) as conn, conn:
         conn.execute(
             "CREATE TABLE tasks ("
             "task_id TEXT PRIMARY KEY, task TEXT NOT NULL, "
@@ -195,7 +198,7 @@ def test_no_double_claim_under_concurrency(tmp_path):
 
 def _expire_claim(tmp_path, task_id: str, *, seconds: int = 7200) -> None:
     """Backdate a claim: what a SIGKILLed worker leaves behind, minus the wait."""
-    with sqlite3.connect(tmp_path / "tasks.db") as conn:
+    with contextlib.closing(sqlite3.connect(tmp_path / "tasks.db")) as conn, conn:
         conn.execute(
             "UPDATE tasks SET claimed_at=datetime('now', ?) WHERE task_id=?",
             (f"-{seconds} seconds", task_id),
@@ -255,7 +258,7 @@ def test_reap_stale_honours_an_explicit_lease(tmp_path):
 
 def test_legacy_db_without_claimed_at_migrates_and_leases(tmp_path):
     db = tmp_path / "tasks.db"
-    with sqlite3.connect(db) as conn:
+    with contextlib.closing(sqlite3.connect(db)) as conn, conn:
         conn.execute(
             "CREATE TABLE tasks ("
             "task_id TEXT PRIMARY KEY, task TEXT NOT NULL, "
@@ -285,3 +288,47 @@ def test_stats_counts_by_status(tmp_path):
     assert s.pending == 1
     assert s.running == 1
     assert s.total == 2
+
+
+def test_every_queue_operation_closes_its_connection(tmp_path, monkeypatch):
+    # `with sqlite3.connect(...)` commits but never closes; relying on
+    # refcounting leaked fds (three per WAL connection) and trips 3.13's
+    # ResourceWarning. Record every connection the queue opens and check
+    # each is closed once the operation returns, on every Python.
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(*a, **k):
+        conn = real_connect(*a, **k)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(kqueue.sqlite3, "connect", recording_connect)
+    q = SqliteTaskQueue(tmp_path / "tasks.db")
+    q.submit("T1", "echo hi")
+    q.claim_pending("kart", 5)
+    q.mark_running("T1")
+    q.stale_running(0)
+    q.reap_stale(10_000)
+    q.mark_done("T1", status="completed", result="{}")
+    q.stats()
+    q.get("T1")
+
+    assert len(opened) >= 9
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+
+def test_a_raise_mid_transaction_rolls_back_and_closes(tmp_path, monkeypatch):
+    q = SqliteTaskQueue(tmp_path / "tasks.db")
+    q.submit("T1", "echo hi")
+    with pytest.raises(RuntimeError), q._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("UPDATE tasks SET status='running' WHERE task_id='T1'")
+        raise RuntimeError("boom")
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+    # Rolled back, and the write lock released: a new claim still works.
+    assert q.get("T1")["status"] == "pending"
+    assert [r.task_id for r in q.claim_pending("kart", 5)] == ["T1"]
