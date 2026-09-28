@@ -1753,6 +1753,10 @@ def run_shell_result_for_task(
         result = {"returncode": raw["returncode"], **result}
     if raw.get("sandbox_setup"):
         result["sandbox_setup"] = raw["sandbox_setup"]
+    # Which cap the task ran under (cgroup / rlimit), so the row can show a
+    # task that ran without the memory cap the operator expected.
+    if raw.get("resource_limit"):
+        result["resource_limit"] = raw["resource_limit"]
     if raw.get("error"):
         result["error"] = raw["error"]
     # Uniform error capture: every failed task carries a non-empty, human-readable
