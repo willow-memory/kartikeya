@@ -71,7 +71,16 @@ _DEFAULT_DB_ENV_PREFIXES = ("PG", "POSTGRES")
 #: the sandbox and pass on the host. Deleting the line from $WILLOW_HOME/env
 #: would fix Kart and break the operator's own terminal. Overridable via the
 #: "env_deny" key in kart-sandbox.json; applied last, after every source.
-_DEFAULT_ENV_DENY = ("WILLOW_KEYRING",)
+_DEFAULT_ENV_DENY = (
+    "WILLOW_KEYRING",
+    # A Kart task carries only its submitter's identity (ruling D, pair
+    # b8b24c45): the desk's own orchestrator/app/session identity must never
+    # cross into a sandboxed task, even when a config's env_prefixes matches
+    # "WILLOW_". Applied last (sandbox.py ~1041), after every other source.
+    "WILLOW_HUMAN_ORCHESTRATOR",
+    "WILLOW_APP_ID",
+    "WILLOW_SESSION_ID",
+)
 
 #: psycopg2's default socket directory. Bound only under allow_db (build_bwrap_argv);
 #: a config listing it in an unconditional bind list undoes that.
@@ -916,6 +925,7 @@ def kart_env(
     allow_net: bool = False,
     allow_localhost: bool = False,
     allow_db: bool = False,
+    submitted_by: str = "",
 ) -> dict[str, str]:
     repo = root or willow_repo_root()
     cfg = load_sandbox_config(repo)
@@ -996,20 +1006,28 @@ def kart_env(
             env["PATH"] = env["PATH"] + ":" + _b
             _path_parts.append(_b)
 
-    if "GIT_AUTHOR_NAME" not in env:
-        with contextlib.suppress(Exception):
-            name = subprocess.check_output(
-                ["git", "config", "--global", "user.name"], text=True
-            ).strip()
-            email = subprocess.check_output(
-                ["git", "config", "--global", "user.email"], text=True
-            ).strip()
-            if name:
-                env["GIT_AUTHOR_NAME"] = name
-                env["GIT_COMMITTER_NAME"] = name
-            if email:
-                env["GIT_AUTHOR_EMAIL"] = email
-                env["GIT_COMMITTER_EMAIL"] = email
+    # A Kart task carries only its submitter's identity (ruling D, pair
+    # b8b24c45): a commit made inside the sandbox is attributed to the
+    # submitting app_id, never the operator's own global git config (this
+    # used to shell out to `git config --global user.name`/`user.email`,
+    # which let every task commit as the human operator regardless of which
+    # seat submitted it). No submitted_by means no git identity env at all;
+    # `git commit` then fails loudly ("please tell me who you are"), which
+    # is the correct outcome for an unattributed task.
+    submitted_by = (submitted_by or "").strip()
+    if submitted_by:
+        env["GIT_AUTHOR_NAME"] = submitted_by
+        env["GIT_COMMITTER_NAME"] = submitted_by
+        env["GIT_AUTHOR_EMAIL"] = f"{submitted_by}@willow.local"
+        env["GIT_COMMITTER_EMAIL"] = f"{submitted_by}@willow.local"
+    else:
+        for _k in (
+            "GIT_AUTHOR_NAME",
+            "GIT_COMMITTER_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_EMAIL",
+        ):
+            env.pop(_k, None)
 
     # Inside bwrap, /var/run is not present unless allow_db mounted the socket.
     # psycopg2 with host=None defaults to /var/run/postgresql.
@@ -1418,6 +1436,7 @@ def run_shell(
     allow_db: bool = False,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    submitted_by: str = "",
 ) -> dict:
     """
     Execute one shell command via bash -c (inside bwrap when enabled).
@@ -1425,7 +1444,10 @@ def run_shell(
     """
     started = time.time()
     run_env = kart_env(
-        allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db
+        allow_net=allow_net,
+        allow_localhost=allow_localhost,
+        allow_db=allow_db,
+        submitted_by=submitted_by,
     )
     if env:
         run_env.update(env)
@@ -1613,6 +1635,7 @@ def run_shell_result_for_task(
     allow_net: bool = False,
     allow_localhost: bool = False,
     allow_db: bool = False,
+    submitted_by: str = "",
 ) -> tuple[str, dict]:
     """Normalize run_shell output for pg.task_complete(status, result)."""
     raw = run_shell(
@@ -1621,6 +1644,7 @@ def run_shell_result_for_task(
         allow_net=allow_net,
         allow_localhost=allow_localhost,
         allow_db=allow_db,
+        submitted_by=submitted_by,
     )
     status = (
         "completed"
@@ -1705,6 +1729,7 @@ def write_task_log(
     *,
     full_stdout: str | None = None,
     full_stderr: str | None = None,
+    submitted_by: str = "",
 ) -> str | None:
     """Write a durable forensic artifact for one task (KP7/S10).
 
@@ -1712,6 +1737,11 @@ def write_task_log(
     meta.json carries the env *key list* only — values may hold credentials
     and must never land in a log file. Never raises; returns the dir path or
     None if the write failed.
+
+    `submitted_by` must be the same value the task actually ran with (Loki
+    0E7F0C89 K6): without it, the recomputed env for the key list omits the
+    GIT_AUTHOR_*/GIT_COMMITTER_* identity keys the task really had, and the
+    forensic record misrepresents what the sandbox handed the task.
     """
     try:
         safe_id = (
@@ -1725,6 +1755,7 @@ def write_task_log(
             allow_net=bool(manifest.get("allow_net")),
             allow_localhost=bool(manifest.get("allow_localhost")),
             allow_db=bool(manifest.get("allow_db")),
+            submitted_by=submitted_by,
         )
         meta = {
             "task_id": str(task_id),

@@ -145,6 +145,7 @@ def _run_one_shell(
     allow_net: bool,
     allow_localhost: bool,
     allow_db: bool,
+    submitted_by: str = "",
 ) -> tuple[str, dict]:
     from .sandbox import bwrap_available, run_shell_result_for_task, use_bwrap
 
@@ -157,6 +158,7 @@ def _run_one_shell(
         allow_net=allow_net,
         allow_localhost=allow_localhost,
         allow_db=allow_db,
+        submitted_by=submitted_by,
     )
     return status, _normalize_shell_result(result)
 
@@ -166,6 +168,7 @@ def run_shell_task(
     *,
     timeout: int | None = None,
     context: str = "poll",
+    submitted_by: str = "",
 ) -> tuple[str, dict]:
     """Execute a shell-class task string. Returns (status, result)."""
     from .sandbox import task_allows_localhost
@@ -211,6 +214,7 @@ def run_shell_task(
                 allow_net=allow_net,
                 allow_localhost=allow_localhost,
                 allow_db=allow_db,
+                submitted_by=submitted_by,
             )
             chunk = result.get("stdout") or ""
             err = result.get("stderr") or result.get("error") or ""
@@ -241,6 +245,7 @@ def run_shell_task(
         allow_net=allow_net,
         allow_localhost=allow_localhost,
         allow_db=allow_db,
+        submitted_by=submitted_by,
     )
     result["steps"] = 1
     return status, result
@@ -351,7 +356,9 @@ def execute_task_row(
                     "context": "egress_denied",
                 }
         try:
-            status, result = run_shell_task(cmd, timeout=timeout, context=context)
+            status, result = run_shell_task(
+                cmd, timeout=timeout, context=context, submitted_by=row.submitted_by
+            )
         except Exception as e:  # noqa: BLE001 — a task's failure is recorded on its row, never raised past the worker
             status, result = "failed", {"error": str(e)}
         if isinstance(result, dict) and "kart_scan" in result:
@@ -397,6 +404,7 @@ def execute_task_row(
             result,
             full_stdout=full_stdout,
             full_stderr=full_stderr,
+            submitted_by=row.submitted_by,
         )
         if log_dir:
             result["log_dir"] = log_dir

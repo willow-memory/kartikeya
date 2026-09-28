@@ -860,3 +860,106 @@ def test_invalid_utf8_output_is_replaced_not_a_codec_error(monkeypatch, timeout_
         assert result["returncode"] == 0, result
     assert "hello" in result["stdout"], result
     assert "�" in result["stdout"], result
+
+
+# -- A Kart task carries only its submitter's identity (ruling D, pair b8b24c45) --
+
+
+def test_git_identity_comes_from_submitted_by_not_global_git_config(monkeypatch):
+    """kart_env used to shell out to `git config --global user.name`/
+    `user.email`; that let a sandboxed task commit as the host operator
+    regardless of which seat submitted it. Now the submitting app_id is the
+    only source, and the global-config lookup is gone entirely."""
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("kart_env must never shell out to git config")
+
+    monkeypatch.setattr(sandbox.subprocess, "check_output", _boom)
+
+    env = sandbox.kart_env(submitted_by="hanuman")
+    assert env["GIT_AUTHOR_NAME"] == "hanuman"
+    assert env["GIT_COMMITTER_NAME"] == "hanuman"
+    assert env["GIT_AUTHOR_EMAIL"] == "hanuman@willow.local"
+    assert env["GIT_COMMITTER_EMAIL"] == "hanuman@willow.local"
+
+
+def test_no_submitted_by_means_no_git_identity_env(monkeypatch):
+    """No app_id -> no git identity env, even when the host process's own
+    GIT_AUTHOR_*/GIT_COMMITTER_* leaked in via the env_prefixes "GIT_"
+    passthrough -- a commit then fails loudly instead of silently
+    attributing to whatever the host happened to carry."""
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "operator-on-the-host")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "operator@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "operator-on-the-host")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "operator@example.com")
+
+    env = sandbox.kart_env(submitted_by="")
+    assert "GIT_AUTHOR_NAME" not in env
+    assert "GIT_AUTHOR_EMAIL" not in env
+    assert "GIT_COMMITTER_NAME" not in env
+    assert "GIT_COMMITTER_EMAIL" not in env
+
+
+def test_env_deny_strips_desk_identity_by_default(vendored_default, monkeypatch):
+    """Desk env never enters: WILLOW_HUMAN_ORCHESTRATOR, WILLOW_APP_ID and
+    WILLOW_SESSION_ID are in the shipped default env_deny, so a fresh box
+    (no live kart-sandbox.json) is safe even though env_prefixes matches
+    "WILLOW_"."""
+    monkeypatch.setenv("WILLOW_HUMAN_ORCHESTRATOR", "1")
+    monkeypatch.setenv("WILLOW_APP_ID", "willow")
+    monkeypatch.setenv("WILLOW_SESSION_ID", "desk-session-123")
+
+    env = sandbox.kart_env()
+    assert "WILLOW_HUMAN_ORCHESTRATOR" not in env
+    assert "WILLOW_APP_ID" not in env
+    assert "WILLOW_SESSION_ID" not in env
+
+
+def test_default_env_deny_constant_carries_desk_identity_names():
+    """Pin the code default (_DEFAULT_ENV_DENY), not just the vendored JSON --
+    the mechanism a config that omits env_deny entirely still falls back to."""
+    assert "WILLOW_HUMAN_ORCHESTRATOR" in sandbox._DEFAULT_ENV_DENY
+    assert "WILLOW_APP_ID" in sandbox._DEFAULT_ENV_DENY
+    assert "WILLOW_SESSION_ID" in sandbox._DEFAULT_ENV_DENY
+
+
+def test_write_task_log_env_keys_reflect_submitted_by_identity(
+    vendored_default, monkeypatch
+):
+    """Loki 0E7F0C89 K6: write_task_log's forensic meta.json env_keys list is
+    built by recomputing kart_env WITHOUT submitted_by, so it omitted the
+    GIT_AUTHOR_*/GIT_COMMITTER_* keys the task actually ran with. Threading
+    submitted_by through must make the logged key list match reality."""
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+
+    log_dir = sandbox.write_task_log(
+        "TID-1", "echo hi", "completed", {}, submitted_by="hanuman"
+    )
+    assert log_dir is not None
+    meta = json.loads((Path(log_dir) / "meta.json").read_text())
+    assert "GIT_AUTHOR_NAME" in meta["env_keys"]
+    assert "GIT_COMMITTER_NAME" in meta["env_keys"]
+    assert "GIT_AUTHOR_EMAIL" in meta["env_keys"]
+    assert "GIT_COMMITTER_EMAIL" in meta["env_keys"]
+
+
+def test_write_task_log_env_keys_omit_identity_when_unattributed(
+    vendored_default, monkeypatch
+):
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+
+    log_dir = sandbox.write_task_log("TID-2", "echo hi", "completed", {})
+    assert log_dir is not None
+    meta = json.loads((Path(log_dir) / "meta.json").read_text())
+    assert "GIT_AUTHOR_NAME" not in meta["env_keys"]
+    assert "GIT_COMMITTER_NAME" not in meta["env_keys"]
