@@ -1482,7 +1482,9 @@ def run_shell(
             text=True,
             # Task output is arbitrary bytes: strict decoding turned invalid
             # UTF-8 into a codec error that lost the output (and, after a
-            # timeout, the "timeout" verdict too).
+            # timeout, the "timeout" verdict too). UTF-8 on every platform,
+            # not the locale (cp1252 on Windows), matching _timeout_text.
+            encoding="utf-8",
             errors="replace",
             env=run_env,
             cwd=cwd,
