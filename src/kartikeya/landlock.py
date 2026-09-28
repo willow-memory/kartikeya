@@ -52,11 +52,12 @@ LANDLOCK_FAILED = "kart: landlock failed"
 # itself (--dev, --proc, --tmpfs), so they never appear in the bind list.
 EXTRA_RW = ("/dev/null", "/dev/zero", "/dev/full")
 EXTRA_RO = ("/proc", "/dev/urandom", "/dev/random")
-# Under bwrap /tmp and /dev/shm are private per-task tmpfs, so they are safe
-# to grant. In plain mode they are the host's, holding other processes'
+# Under bwrap /tmp and /dev/shm are private per-task tmpfs, and --dev gives
+# a private devpts (/dev/ptmx, /dev/pts, needed by pty tools such as
+# script and expect), so they are safe to grant. In plain mode they are the host's, holding other processes'
 # files, so they are not granted: give plain-mode tasks a writable bind (and
 # TMPDIR) for scratch.
-BWRAP_TMPFS_RW = ("/tmp", "/dev/shm")
+BWRAP_TMPFS_RW = ("/tmp", "/dev/shm", "/dev/ptmx", "/dev/pts")
 
 _SYS_CREATE_RULESET = 444  # same number on every architecture (asm-generic)
 _CREATE_RULESET_VERSION = 1
@@ -172,7 +173,7 @@ def binds_from_bwrap_argv(argv: list[str]) -> tuple[list[str], list[str]]:
 # The launcher runs as `python3 -c LAUNCHER <spec> -- <argv...>` inside the
 # sandbox. It must stand alone: kartikeya itself may not be importable there.
 LAUNCHER = r"""
-import ctypes, json, os, stat, sys
+import ctypes, json, os, stat, struct, sys
 
 FAILED = "kart: landlock failed"
 
@@ -220,34 +221,73 @@ class RulesetAttr(ctypes.Structure):
     _fields_ = [("fs", ctypes.c_uint64), ("net", ctypes.c_uint64),
                 ("scoped", ctypes.c_uint64)]
 
-class PathBeneath(ctypes.Structure):
-    _pack_ = 1
-    _fields_ = [("allowed", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
-
 attr = RulesetAttr(handled, 0, 0)
 size = 8 if abi < 4 else (16 if abi < 6 else 24)
 ruleset, err = call(444, ctypes.byref(attr), ctypes.c_size_t(size), ctypes.c_uint32(0))
 if ruleset < 0:
     fail("create_ruleset: %s" % err)
 
-for path, access in [(p, RW) for p in spec["rw"]] + [(p, RO) for p in spec["ro"]]:
+def add_rule(path, access):
+    # struct landlock_path_beneath_attr is packed: u64 allowed_access, s32
+    # parent_fd (12 bytes). Built with struct, not a packed ctypes Structure,
+    # which Python 3.14 deprecates.
     try:
         fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     except FileNotFoundError:
-        continue
+        return
     except OSError as e:
         fail("open %s: %s" % (path, e))
     try:
         allowed = access & handled
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
             allowed &= FILE_RIGHTS
-        rule = PathBeneath(allowed, fd)
-        r, err = call(445, ctypes.c_int(ruleset), ctypes.c_int(1), ctypes.byref(rule),
-                      ctypes.c_uint32(0))
+        buf = ctypes.create_string_buffer(struct.pack("=Qi", allowed, fd), 12)
+        r, err = call(445, ctypes.c_int(ruleset), ctypes.c_int(1), buf, ctypes.c_uint32(0))
         if r < 0:
             fail("add_rule %s: %s" % (path, err))
     finally:
         os.close(fd)
+
+def norm(p):
+    return os.path.normpath(p)
+
+def under(child, parent):
+    return child != parent and child.startswith(parent.rstrip("/") + "/")
+
+ro_paths = [norm(p) for p in spec["ro"]]
+
+def carve(path, ro_inside):
+    # Landlock only adds rights: a read-write rule on `path` would make every
+    # read-only descendant writable again. So `path` itself gets read-only
+    # rights, and each entry that is not on the way to a read-only subtree
+    # gets read-write; entries that are, recurse. Symlinks get no rule (the
+    # kernel checks their target). A directory that cannot be listed cannot
+    # be carved, so the ruleset is refused.
+    add_rule(path, RO)
+    try:
+        entries = sorted(os.listdir(path))
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        fail("cannot carve %s around read-only %s: %s" % (path, ro_inside[0], e))
+    for name in entries:
+        child = os.path.join(path, name)
+        if child in ro_inside:
+            continue  # its own read-only rule is added below
+        nested = [d for d in ro_inside if under(d, child)]
+        if nested:
+            carve(child, nested)
+        elif not os.path.islink(child):
+            add_rule(child, RW)
+
+for path in (norm(p) for p in spec["rw"]):
+    nested = [d for d in ro_paths if under(d, path)]
+    if nested:
+        carve(path, nested)
+    else:
+        add_rule(path, RW)
+for path in ro_paths:
+    add_rule(path, RO)
 
 if libc.prctl(38, 1, 0, 0, 0) != 0:           # PR_SET_NO_NEW_PRIVS
     fail("no_new_privs: %s" % os.strerror(ctypes.get_errno()))
@@ -266,4 +306,7 @@ except OSError as e:
 
 def wrap_argv(argv: list[str], spec: str) -> list[str]:
     """``argv`` run under the launcher with ``spec``."""
-    return [landlock_python(), "-c", LAUNCHER, spec, "--", *argv]
+    # -I: no cwd, PYTHONPATH or user site on sys.path; -S: no site import.
+    # The launcher runs before confinement, so it must not import anything a
+    # previous task could have planted (e.g. in a read-write ~/.local).
+    return [landlock_python(), "-I", "-S", "-c", LAUNCHER, spec, "--", *argv]

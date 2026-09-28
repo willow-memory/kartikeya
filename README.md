@@ -106,6 +106,15 @@ In both `auto` and `enforce`, a failure to apply the ruleset refuses the task
 records the ABI version that confined it. Try `auto` on one worker before
 turning it on everywhere.
 
+Landlock can only *add* rights, so a read-only path inside a read-write bind
+(a repo's `.git/hooks` inside the writable repo, say) is protected by
+**carving**: the read-write parent gets read-only rights at its own level, and
+each of its other entries gets read-write. The cost is that nothing can be
+created or removed *directly in* a carved directory. With `.git/hooks`
+read-only that includes `.git/` itself, so `git commit` cannot write
+`.git/index.lock`. A policy that nests read-only paths inside writable repos is
+therefore not yet compatible with `KART_LANDLOCK` for git work.
+
 _Coming with stage 2 — once the worker core lands, this section documents
 `kartikeya worker` end to end (submit → worker runs → poll)._
 

@@ -239,3 +239,118 @@ def test_an_ordinary_task_still_works_under_bwrap_with_landlock(monkeypatch):
     assert result["stdout"].strip() == "ok", result
     assert result["sandbox"] == "bwrap"
     assert result["landlock"] == f"abi{landlock.landlock_abi()}"
+
+
+# ── Loki 1645BC7C: parity for read-only paths nested in read-write binds ─────
+
+
+@pytest.fixture
+def nested(tmp_path, box, monkeypatch):
+    """A read-write bind holding a read-only child (like a repo's .git/hooks)
+    and a trust overlay (like $WILLOW_HOME/mcp_apps)."""
+    rw, _ro, _secret = box
+    locked = rw / "locked"
+    overlay = rw / "mcp_apps"
+    (rw / "open").mkdir()
+    for d in (locked, overlay):
+        d.mkdir()
+        (d / "f").write_text("orig\n")
+    cfg = Path(os.environ["KART_SANDBOX_CONFIG"])
+    data = json.loads(cfg.read_text())
+    data["bind_read_only"].append(str(locked))
+    cfg.write_text(json.dumps(data))
+    monkeypatch.setattr(sandbox, "collect_mcp_trust_ro_overlays", lambda *a: [overlay])
+    monkeypatch.setenv("KART_LANDLOCK", "enforce")
+    return rw, locked, overlay
+
+
+@needs_landlock
+def test_a_read_only_child_of_a_read_write_bind_stays_read_only(nested):
+    # Landlock only adds rights, so a read-write rule on the parent used to
+    # make the read-only child writable again (B1). The parent is now carved.
+    rw, locked, _ = nested
+    result = sandbox.run_shell(
+        f"cat {locked}/f; "
+        f"(echo EVIL > {locked}/f) 2>/dev/null || echo write-denied; "
+        f"rm -f {locked}/f 2>/dev/null || echo delete-denied; "
+        f"(echo ok > {rw}/open/new) && echo sibling-ok",
+        timeout=20,
+    )
+    assert result["stdout"].split() == [
+        "orig",
+        "write-denied",
+        "delete-denied",
+        "sibling-ok",
+    ], result
+    assert (locked / "f").read_text() == "orig\n"
+
+
+@needs_landlock
+def test_plain_mode_protects_the_trust_overlays(nested):
+    _, _, overlay = nested
+    result = sandbox.run_shell(
+        f"(echo EVIL > {overlay}/f) 2>/dev/null || echo denied", timeout=20
+    )
+    assert result["stdout"].strip() == "denied", result
+    assert (overlay / "f").read_text() == "orig\n"
+
+
+@needs_landlock
+def test_nothing_can_be_created_directly_in_a_carved_directory(nested):
+    # The known cost of parity: the right to create entries in the parent
+    # would be inherited by the read-only child, so a carved directory is
+    # read-only at its own level. (This is what stops `git commit` from
+    # writing .git/index.lock when .git/hooks is read-only.)
+    rw, _, _ = nested
+    result = sandbox.run_shell(
+        f"(echo x > {rw}/new-at-top) 2>/dev/null || echo create-denied", timeout=20
+    )
+    assert result["stdout"].strip() == "create-denied", result
+
+
+# ── B2: the launcher imports nothing a task could have planted ───────────────
+
+
+@needs_landlock
+def test_the_launcher_does_not_import_from_the_task_directory(
+    box, tmp_path, monkeypatch
+):
+    # The launcher runs before it confines itself. Without -I -S, `python3 -c`
+    # puts the working directory (and PYTHONPATH, user site) on sys.path, so
+    # a planted json.py would run unconfined in every later task.
+    rw, _, _ = box
+    marker = tmp_path / "planted-code-ran"
+    (rw / "json.py").write_text(
+        f"open({str(marker)!r}, 'w').close()\nraise SystemExit(0)\n"
+    )
+    monkeypatch.setenv("KART_LANDLOCK", "enforce")
+    monkeypatch.setenv("PYTHONPATH", str(rw))
+    result = sandbox.run_shell("echo ran", timeout=20, cwd=str(rw))
+    assert result["returncode"] == 0 and result["stdout"].strip() == "ran", result
+    assert not marker.exists()
+
+
+def test_launcher_is_isolated_and_uses_no_packed_ctypes_struct():
+    argv = landlock.wrap_argv(["true"], "{}")
+    assert argv[1:3] == ["-I", "-S"]
+    # F3: ctypes `_pack_` without `_layout_` is deprecated in Python 3.14.
+    assert "_pack_ =" not in landlock.LAUNCHER
+
+
+# ── minor ────────────────────────────────────────────────────────────────────
+
+
+@needs_landlock
+@pytest.mark.skipif(os.name == "nt", reason="POSIX sleep")
+def test_a_timed_out_task_keeps_its_landlock_state(box, monkeypatch):
+    monkeypatch.setenv("KART_LANDLOCK", "auto")
+    result = sandbox.run_shell("sleep 30", timeout=1)
+    assert result["error"] == "timeout", result
+    assert result["landlock"] == f"abi{landlock.landlock_abi()}"
+
+
+def test_pty_devices_are_granted_under_bwrap_only():
+    boxed = json.loads(landlock.landlock_spec([], [], bwrap=True))
+    plain = json.loads(landlock.landlock_spec([], [], bwrap=False))
+    assert {"/dev/ptmx", "/dev/pts"} <= set(boxed["rw"])
+    assert not {"/dev/ptmx", "/dev/pts"} & set(plain["rw"])

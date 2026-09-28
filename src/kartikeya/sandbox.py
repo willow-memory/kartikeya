@@ -1723,7 +1723,7 @@ def run_shell(
             out["error"] = "landlock_failed"
         return out
     except subprocess.TimeoutExpired as e:
-        return {
+        timed_out = {
             "returncode": -1,
             "stdout": _timeout_text(e.stdout),
             "stderr": _timeout_text(e.stderr),
@@ -1731,8 +1731,11 @@ def run_shell(
             "error": "timeout",
             "sandbox": sandbox,
         }
+        if landlock_state is not None:
+            timed_out["landlock"] = landlock_state
+        return timed_out
     except Exception as e:  # noqa: BLE001 — every failure to launch becomes a result row, never an exception out of the runner
-        return {
+        failed = {
             "returncode": -1,
             "stdout": "",
             "stderr": str(e),
@@ -1740,6 +1743,9 @@ def run_shell(
             "error": str(e),
             "sandbox": sandbox,
         }
+        if landlock_state is not None:
+            failed["landlock"] = landlock_state
+        return failed
     finally:
         if cleanup is not None:
             cleanup()
