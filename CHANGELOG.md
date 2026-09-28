@@ -36,7 +36,7 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **sandbox:** the cgroup sweep only kills leaves from its own pid namespace ([b9e1731](https://github.com/willow-memory/kartikeya/commit/b9e1731d0a3839e28564b86f00bb27a5ea7dcc16))
+* **sandbox:** the cgroup sweep only kills leaves from its own pid namespace ([fe1cc5b](https://github.com/willow-memory/kartikeya/commit/fe1cc5bb8029aaff585327ab02ffab777f5c8a20))
 
 ## [0.4.3](https://github.com/willow-memory/kartikeya/compare/v0.4.2...v0.4.3) (2026-09-28)
 
