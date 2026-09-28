@@ -1742,12 +1742,15 @@ def run_shell_result_for_task(
         else "failed"
     )
     result = {
-        "returncode": raw.get("returncode"),
         "stdout": clip_output((raw.get("stdout") or "").strip(), 8000),
         "stderr": clip_output((raw.get("stderr") or "").strip(), 1500),
         "elapsed_s": raw.get("elapsed_s"),
         "sandbox": raw.get("sandbox"),
     }
+    # Absent, not None, when nothing ran: hosts read a missing returncode as
+    # "refused before running" (e.g. cgroup_setup_failed).
+    if "returncode" in raw:
+        result = {"returncode": raw["returncode"], **result}
     if raw.get("sandbox_setup"):
         result["sandbox_setup"] = raw["sandbox_setup"]
     if raw.get("error"):
@@ -1757,7 +1760,7 @@ def run_shell_result_for_task(
     # no-match, a silent non-zero step in an `&&` chain) would otherwise leave the
     # failure causeless and untriageable. Full stdout/stderr stay in their fields.
     if status == "failed" and not result.get("error"):
-        rc = result["returncode"]
+        rc = result.get("returncode")
         last_err = result["stderr"].splitlines()[-1].strip() if result["stderr"] else ""
         last_out = result["stdout"].splitlines()[-1].strip() if result["stdout"] else ""
         if last_err:

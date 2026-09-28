@@ -221,3 +221,56 @@ def test_a_failing_sweep_does_not_stop_the_worker(tmp_path, monkeypatch):
     run_worker(q, once=True, slots=1)
     assert q.get("T1")["status"] == "completed"
     assert time.time() - started < 30
+
+
+# ── B1 (Loki 71BF5ACF): "no returncode" must survive to the task row ─────────
+
+
+def test_refusal_has_no_returncode_at_every_layer(tmp_path, monkeypatch):
+    # willow-mcp reads `"returncode" not in result` as "refused before
+    # running". run_shell omitted it, but both normalizers put it back as
+    # None, so the row the host actually reads carried returncode: null.
+    from kartikeya.execute import run_shell_task
+
+    bogus = tmp_path / "not-a-cgroup"
+    bogus.mkdir()
+    monkeypatch.setenv("KART_CGROUP_PARENT", str(bogus))
+    monkeypatch.setattr(sandbox.cgroup_setup, "systemd_cgroup_path", lambda *a: None)
+
+    raw = sandbox.run_shell("echo hi", timeout=10)
+    status, row = sandbox.run_shell_result_for_task("echo hi", timeout=10)
+    task_status, task_row = run_shell_task("echo hi", timeout=10)
+
+    for result in (raw, row, task_row):
+        assert result["error"] == "cgroup_setup_failed", result
+        assert "returncode" not in result, result
+    assert status == task_status == "failed"
+
+
+def test_a_task_that_ran_keeps_its_returncode(monkeypatch):
+    # The key is only omitted when nothing ran.
+    from kartikeya.execute import run_shell_task
+
+    monkeypatch.setattr(sandbox.cgroup_setup, "systemd_cgroup_path", lambda *a: None)
+    status, row = run_shell_task("exit 3", timeout=10)
+    assert status == "failed"
+    assert row["returncode"] == 3
+
+
+# ── cgroup.kill happens before rmdir ─────────────────────────────────────────
+
+
+def test_leaf_is_killed_before_it_is_removed(tmp_path, monkeypatch):
+    events: list[str] = []
+    leaf = tmp_path / f"kart-{os.getpid()}-{uuid.uuid4().hex}"
+    leaf.mkdir()
+    real_rmdir = os.rmdir
+    monkeypatch.setattr(sandbox, "_write_cgroup_kill", lambda p: events.append("kill"))
+
+    def rmdir(path, *a, **k):
+        events.append("rmdir")
+        real_rmdir(path, *a, **k)
+
+    monkeypatch.setattr(sandbox.os, "rmdir", rmdir)
+    assert sandbox._kill_and_remove_leaf(str(leaf)) is True
+    assert events == ["kill", "rmdir"]
