@@ -31,10 +31,14 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX cgroup paths")
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch):
+def _env(monkeypatch, tmp_path):
     monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
     monkeypatch.delenv("WILLOW_KART_NO_RLIMIT", raising=False)
     monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
+    # Never read the host's real ~/.config/systemd/user/kart.slice.
+    monkeypatch.setattr(
+        sandbox.cgroup_setup, "slice_unit_path", lambda: tmp_path / "no-kart.slice"
+    )
 
 
 @pytest.fixture
@@ -331,6 +335,55 @@ def test_leaf_is_killed_before_it_is_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox.os, "rmdir", rmdir)
     assert sandbox._kill_and_remove_leaf(str(leaf)) is True
     assert events == ["kill", "rmdir"]
+
+
+# ── F2: an installed kart.slice that is not running ──────────────────────────
+
+
+def test_installed_but_stopped_kart_slice_refuses_the_task(tmp_path, monkeypatch):
+    # After a reboot, before the slice starts, systemd reports no cgroup for
+    # kart.slice. That used to read as "never set up" and tasks ran without a
+    # memory cap. The installed unit file says cgroup mode was intended.
+    unit = tmp_path / "kart.slice"
+    unit.write_text("[Slice]\nDelegate=memory pids\n")
+    monkeypatch.setattr(sandbox.cgroup_setup, "slice_unit_path", lambda: unit)
+    monkeypatch.setattr(sandbox.cgroup_setup, "systemd_cgroup_path", lambda *a: None)
+    assert sandbox.cgroup_setup.cgroup_parent_state() == (None, str(unit))
+    marker = tmp_path / "ran"
+    result = sandbox.run_shell(f"touch {marker}", timeout=10)
+    assert result["error"] == "cgroup_setup_failed", result
+    # The refusal names the unit file and both ways out.
+    assert str(unit) in result["stderr"]
+    assert "not running" in result["stderr"] and "remove" in result["stderr"]
+    assert not marker.exists()
+
+
+def test_no_unit_file_is_still_not_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr(sandbox.cgroup_setup, "systemd_cgroup_path", lambda *a: None)
+    assert sandbox.cgroup_setup.cgroup_parent_state() == (None, None)
+
+
+def test_the_task_row_says_which_cap_it_ran_under(monkeypatch):
+    # resource_limit reaches the row the host stores, at both normalizers.
+    from kartikeya.execute import run_shell_task
+
+    monkeypatch.setattr(sandbox.cgroup_setup, "systemd_cgroup_path", lambda *a: None)
+    status, row = sandbox.run_shell_result_for_task("echo hi", timeout=10)
+    assert status == "completed" and row["resource_limit"] == "rlimit", row
+    status, row = run_shell_task("echo hi", timeout=10)
+    assert status == "completed" and row["resource_limit"] == "rlimit", row
+
+
+def test_a_refused_row_says_cgroup(tmp_path, monkeypatch):
+    from kartikeya.execute import run_shell_task
+
+    bogus = tmp_path / "not-a-cgroup"
+    bogus.mkdir()
+    monkeypatch.setenv("KART_CGROUP_PARENT", str(bogus))
+    monkeypatch.setattr(sandbox.cgroup_setup, "systemd_cgroup_path", lambda *a: None)
+    _, row = run_shell_task("echo hi", timeout=10)
+    assert row["error"] == "cgroup_setup_failed"
+    assert row["resource_limit"] == "cgroup"
 
 
 # ── setup failure between leaf creation and the main try ────────────────────
