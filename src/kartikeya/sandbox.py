@@ -1349,10 +1349,21 @@ def _limits_context(limits: dict):
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """SIGKILL the process group led by ``proc`` (see start_new_session in
     run_shell), then reap ``proc``. The group may already be gone. Windows
-    has no process groups here, so it falls back to killing ``proc`` alone."""
+    has no os.killpg; ``taskkill /T`` kills the tree there instead. It must run
+    before proc.kill(), since it finds descendants through the live parent.
+    Without it a surviving grandchild holds the output pipes, and closing
+    them blocks until it exits."""
     if hasattr(os, "killpg"):
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
+    elif os.name == "nt":
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
     with contextlib.suppress(OSError):
         proc.kill()
     proc.wait()
