@@ -643,17 +643,33 @@ def _issue_payload(issue: ScanIssue, *, where: str) -> dict:
 # as a line break or blank; it is ordinary trailing text on the line) so a
 # CRLF-terminated body is refused here too, rather than silently kept as
 # part of the last word on each line downstream.
-_CONTROL_CHARACTER_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f\u0085\u2028\u2029]")
+_CONTROL_CHARACTERS = frozenset(
+    map(
+        chr,
+        [
+            *range(0x09),  # C0 controls before TAB: NUL..BS
+            *range(0x0B, 0x20),  # C0 controls after LF through US: VT, FF, SO..US
+            0x7F,  # DEL
+            0x85,  # NEL (NEXT LINE)
+            0x2028,  # LINE SEPARATOR
+            0x2029,  # PARAGRAPH SEPARATOR
+        ],
+    )
+)
 
 
 def _control_character_issue(text: str, *, where: str) -> dict | None:
-    m = _CONTROL_CHARACTER_RE.search(text)
-    if not m:
+    found = None
+    for ch in text:
+        if ch in _CONTROL_CHARACTERS:
+            found = ch
+            break
+    if found is None:
         return None
     return {
         "error": (
             "[KART-SECURITY] Task text contains a control/line-break "
-            f"character (U+{ord(m.group(0)):04X}) that Python treats as a "
+            f"character (U+{ord(found):04X}) that Python treats as a "
             "line break or blank but bash does not — normalise line "
             "endings to \\n and remove other control characters before "
             "resubmitting."
@@ -661,7 +677,7 @@ def _control_character_issue(text: str, *, where: str) -> dict | None:
         "kart_scan": {
             "category": "control_characters",
             "severity": SEV_CRITICAL,
-            "message": f"Disallowed control character U+{ord(m.group(0)):04X}",
+            "message": f"Disallowed control character U+{ord(found):04X}",
             "where": where,
         },
     }
@@ -671,7 +687,7 @@ def check_control_characters(
     task_text: str = "", *, script_body: str = ""
 ) -> dict | None:
     """Refuse any task/script_body text carrying a character Python treats as
-    a line break or blank but bash does not (see `_CONTROL_CHARACTER_RE`).
+    a line break or blank but bash does not (see `_CONTROL_CHARACTERS`).
     Structural fix for the whitespace-model class of bug (B4/B5, Loki
     918CFAD0/6AA36297/36CDF4A5): every downstream `splitlines()`/`\\s`/
     `.isspace()`/`.strip()` disagreement with bash is unreachable once none

@@ -4,6 +4,7 @@ Exercises the vendored security_scan through task_scan's public entry
 (check_kart_task) plus the host-configurable hook-tamper guard.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -811,8 +812,8 @@ def test_heredoc_delimiter_continuing_with_control_character_fails_closed():
         "\x1f",
         "\x7f",  # DEL
         "\x85",  # NEL
-        " ",  # LINE SEPARATOR
-        " ",  # PARAGRAPH SEPARATOR
+        "\u2028",  # LINE SEPARATOR
+        "\u2029",  # PARAGRAPH SEPARATOR
     ],
 )
 def test_control_character_refused_at_entry_in_task(char):
@@ -848,6 +849,29 @@ def test_control_character_checked_before_any_other_scan():
 
 def test_benign_task_with_no_control_characters_is_unaffected():
     assert task_scan.check_kart_task("echo ok\necho also ok") is None
+
+
+# ── CodeQL py/overly-large-range: `_CONTROL_CHARACTERS` (an explicit
+# frozenset) replaced the old regex character class
+# `[\x00-\x08\x0b-\x1f\x7f\u0085\u2028\u2029]` so there is nothing left for
+# the range-typo heuristic to flag. This test is the equality proof: it
+# compiles the OLD pattern itself, from its own literal source (never
+# imported from task_scan), and checks every one of the 0x110000 code
+# points agrees between old-regex-membership and new-set-membership. It
+# also pins the audited count (Loki 768E1043: 34 code points).
+_OLD_CONTROL_CHARACTER_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f\u0085\u2028\u2029]")
+
+
+def test_control_characters_set_equals_old_regex_for_every_code_point():
+    for cp in range(0x110000):
+        ch = chr(cp)
+        assert (ch in task_scan._CONTROL_CHARACTERS) == bool(
+            _OLD_CONTROL_CHARACTER_RE.match(ch)
+        ), f"mismatch at U+{cp:04X}"
+
+
+def test_control_characters_set_has_exactly_34_members():
+    assert len(task_scan._CONTROL_CHARACTERS) == 34
 
 
 # ── M-O4 (Loki 36CDF4A5): a TAB-indented terminator must NOT close a plain
