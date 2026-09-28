@@ -34,6 +34,7 @@ import subprocess
 import sysconfig
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from . import cgroup_setup
@@ -1307,35 +1308,54 @@ def wrap_task_with_rlimits(cmd: str, limits: dict) -> str:
     return "; ".join(lines)
 
 
+class CgroupSetupError(RuntimeError):
+    """A delegated cgroup parent exists, but the task's leaf could not be made."""
+
+
 def _try_make_cgroup(limits: dict) -> str | None:
-    """Create a limited cgroup v2 leaf under a delegated parent, or None."""
+    """Create a limited cgroup v2 leaf for one task, or None if no delegated
+    parent is configured (then rlimit mode is the intended path).
+
+    Once a parent resolves, cgroup mode is what the operator asked for, so a
+    failure to create or configure the leaf raises CgroupSetupError and the
+    task is refused rather than run without a memory cap. The leaf is named
+    with a uuid, not pid+millisecond: concurrent slots in one worker process
+    that started in the same millisecond collided on the old name, and the
+    loser silently ran uncapped (gap 879c09c6e723).
+    """
     parent = cgroup_setup.resolve_cgroup_parent()
     if not parent:
         return None
+    leaf = os.path.join(parent, f"kart-{uuid.uuid4().hex}")
     try:
-        with open(os.path.join(parent, "cgroup.controllers")) as f:
-            controllers = set(f.read().split())
-        if not ({"memory", "pids"} <= controllers):
-            return None
-        leaf = os.path.join(
-            parent, f"kart-{os.getpid()}-{int(time.time() * 1000) % 100000}"
-        )
         os.mkdir(leaf)
+    except OSError as e:
+        raise CgroupSetupError(f"cannot create cgroup leaf {leaf}: {e}") from e
+    try:
         if "mem" in limits:
             with open(os.path.join(leaf, "memory.max"), "w") as f:
                 f.write(str(limits["mem"]))
         if "pids" in limits:
             with open(os.path.join(leaf, "pids.max"), "w") as f:
                 f.write(str(limits["pids"]))
-        return leaf
-    except OSError:
-        return None
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            os.rmdir(leaf)
+        raise CgroupSetupError(f"cannot set limits on cgroup leaf {leaf}: {e}") from e
+    return leaf
 
 
 # Joins the cgroup from inside the child, then execs the real argv in the same
-# process. $0 carries the cgroup.procs path, "$@" the argv. A failed write is
-# silent and non-fatal, matching the old preexec hook: the task runs unlimited.
-_CGROUP_JOIN_SH = '{ echo $$ >"$0"; } 2>/dev/null; exec "$@"'
+# process. $0 carries the cgroup.procs path, "$@" the argv. A failed join exits
+# 125 with a marker on stderr instead of exec'ing: the task is refused, never
+# run outside the cgroup it was given (gap 62b31dd2429a).
+_CGROUP_JOIN_FAILED = "kart: cgroup join failed"
+_CGROUP_JOIN_EXIT = 125
+_CGROUP_JOIN_SH = (
+    '{ echo $$ >"$0"; } 2>/dev/null || '
+    f'{{ echo "{_CGROUP_JOIN_FAILED}: $0" >&2; exit {_CGROUP_JOIN_EXIT}; }}; '
+    'exec "$@"'
+)
 
 
 def _limits_context(limits: dict):
@@ -1348,6 +1368,8 @@ def _limits_context(limits: dict):
     child).
     rlimit: no prefix — limits are applied inside the sandbox via
     wrap_task_with_rlimits() so bwrap setup is not capped.
+    Raises CgroupSetupError when a delegated parent exists but the leaf
+    cannot be made; run_shell refuses the task.
     """
     leaf = _try_make_cgroup(limits)
     if leaf:
@@ -1449,7 +1471,18 @@ def run_shell(
     limits_prefix = cleanup = None
     resource_mode = "none"
     if limits:
-        limits_prefix, cleanup, resource_mode = _limits_context(limits)
+        try:
+            limits_prefix, cleanup, resource_mode = _limits_context(limits)
+        except CgroupSetupError as e:
+            return {
+                "returncode": -1,
+                "stdout": "",
+                "stderr": str(e),
+                "elapsed_s": round(time.time() - started, 2),
+                "error": "cgroup_setup_failed",
+                "sandbox": "none",
+                "resource_limit": "cgroup",
+            }
         if resource_mode == "rlimit":
             cmd = wrap_task_with_rlimits(cmd, limits)
 
@@ -1546,6 +1579,14 @@ def run_shell(
             out["sandbox_setup"] = setup
             if setup == "failed":
                 out["error"] = "sandbox_setup_failed"
+        # Last, so it wins over sandbox_setup_failed: a refused join never
+        # exec'd bwrap, which is why bwrap reported no child.
+        if (
+            resource_mode == "cgroup"
+            and proc.returncode == _CGROUP_JOIN_EXIT
+            and _CGROUP_JOIN_FAILED in (stderr or "")
+        ):
+            out["error"] = "cgroup_join_failed"
         return out
     except subprocess.TimeoutExpired as e:
         return {

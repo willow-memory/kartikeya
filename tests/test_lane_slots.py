@@ -151,3 +151,27 @@ def test_two_workers_drain_one_queue_each_task_exactly_once(tmp_path):
     assert not errors, errors
     assert sorted(ran) == sorted(f"T{i}" for i in range(n))
     assert seed.stats().completed == n
+
+
+@pytest.mark.parametrize("lane", ["fast", "batch"])
+def test_cli_passes_slots_and_lane_through(tmp_path, monkeypatch, lane):
+    # `kartikeya worker --slots N` must reach run_worker on either lane.
+    from kartikeya import worker as kworker
+
+    seen = {}
+    monkeypatch.setattr(kworker, "run_worker", lambda q, **kw: seen.update(kw))
+    rc = kworker.main(
+        [
+            "worker",
+            "--lane",
+            lane,
+            "--slots",
+            "4",
+            "--once",
+            "--db",
+            str(tmp_path / "k.db"),
+        ]
+    )
+    assert rc == 0
+    assert seen["slots"] == 4
+    assert seen["lane"] == lane

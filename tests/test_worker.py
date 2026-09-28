@@ -406,22 +406,54 @@ def test_recovery_flips_the_heartbeat_back():
     assert _run_until(_RecoveringQueue(failures=1), 4) == [True, False, True, True]
 
 
-def test_a_saturated_worker_is_busy_not_failing(tmp_path):
-    """free == 0 attempts no claim, so it must not reset the flag either way."""
+class _OneTaskThenRaise:
+    """Hands out one task, then fails every later claim. A worker whose only
+    slot is busy must not claim at all, so it never sees the failure."""
+
+    def __init__(self, row):
+        self.row = row
+        self.claims = 0
+
+    def claim_pending(self, agent, limit, lane=None):
+        self.claims += 1
+        if self.claims == 1:
+            return [self.row]
+        raise RuntimeError("claimed while saturated")
+
+    def mark_done(self, task_id, *, status, result):
+        pass
+
+
+def test_a_saturated_worker_is_busy_not_failing():
+    """free == 0 attempts no claim, so it must not reset the flag either way.
+
+    The row is a workflow_phase task so it really reaches the blocking
+    handler and holds the only slot (a {"type":"blocker"} body would run as a
+    shell command and free the slot at once)."""
     import threading
 
-    release = threading.Event()
-    q = _queue(tmp_path)
-    q.submit("S1", '{"type":"blocker"}')
+    started, release = threading.Event(), threading.Event()
+    q = _OneTaskThenRaise(
+        TaskRow(
+            task_id="S1",
+            task='{"type":"workflow_phase","run_id":"r","phase_name":"p"}',
+        )
+    )
 
     def handler(row, *, timeout=None, context="poll"):
+        started.set()
         release.wait(5)
         return "completed", {}
 
-    seen = _run_until(q, 4, slots=1, handlers={"blocker": handler})
-    release.set()
+    try:
+        seen = _run_until(q, 4, slots=1, handlers={"workflow_phase": handler})
+    finally:
+        release.set()
 
-    # tick 1 claims S1 and fills the only slot; later ticks find free == 0.
+    # tick 1 claims S1 and fills the only slot; later ticks find free == 0
+    # and must not claim (a claim would raise and report tick_ok=False).
+    assert started.is_set()
+    assert q.claims == 1
     assert seen == [True, True, True, True]
 
 

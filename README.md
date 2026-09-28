@@ -78,6 +78,17 @@ only. Without a delegated parent, Kart falls back to task-scoped `prlimit`/`ulim
 sandbox (PID cap by default; virtual-memory cap only with `KART_RLIMIT_USE_AS=1`).
 `WILLOW_KART_NO_RLIMIT=1` disables caps entirely (escape hatch only).
 
+With a delegated parent, each task gets its own cgroup leaf. If that leaf cannot
+be created, configured or joined, the task is **refused**
+(`cgroup_setup_failed` / `cgroup_join_failed`) rather than run without its
+memory cap.
+
+**Concurrency per worker process:** the `fast` lane runs up to
+`KART_FAST_WORKERS` tasks at once (default 3) and the `batch` lane up to
+`KART_BATCH_WORKERS` (default 1, since batch work is long and heavy). `kartikeya
+worker --slots N` overrides either. Like `KART_CGROUP_PARENT`, set these in the
+worker unit's `Environment=`, then restart it.
+
 _Coming with stage 2 — once the worker core lands, this section documents
 `kartikeya worker` end to end (submit → worker runs → poll)._
 
