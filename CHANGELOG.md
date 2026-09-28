@@ -31,6 +31,13 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.4.5](https://github.com/willow-memory/kartikeya/compare/v0.4.4...v0.4.5) (2026-09-28)
+
+
+### Fixed
+
+* **sandbox:** remove the cgroup leaf when setup fails before launch ([3c547fb](https://github.com/willow-memory/kartikeya/commit/3c547fb1424e29dd75192c5a645f94bd38feca89))
+
 ## [0.4.4](https://github.com/willow-memory/kartikeya/compare/v0.4.3...v0.4.4) (2026-09-28)
 
 
