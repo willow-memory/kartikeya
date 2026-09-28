@@ -77,7 +77,7 @@ def test_reaper_alignment_flags_a_fast_ceiling_above_the_reaper(monkeypatch):
 def _timeout_seen_by_the_sandbox(monkeypatch, tmp_path, *, lane, context):
     seen = {}
 
-    def _capture(_cmd, *, timeout=None, context="poll"):
+    def _capture(_cmd, *, timeout=None, context="poll", submitted_by=""):
         seen["timeout"] = timeout
         return "completed", {"stdout": ""}
 

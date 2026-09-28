@@ -423,3 +423,68 @@ def test_a_saturated_worker_is_busy_not_failing(tmp_path):
 
     # tick 1 claims S1 and fills the only slot; later ticks find free == 0.
     assert seen == [True, True, True, True]
+
+
+# -- A Kart task carries only its submitter's identity (ruling D, pair b8b24c45) --
+
+
+def test_execute_task_row_forwards_submitted_by_to_run_shell_task(monkeypatch):
+    """execute_task_row must forward row.submitted_by into run_shell_task so
+    kart_env can set GIT_AUTHOR_NAME/EMAIL from the submitting app_id instead
+    of the operator's global git config."""
+    seen = {}
+
+    def _fake_run_shell_task(cmd, *, timeout=None, context="poll", submitted_by=""):
+        seen["submitted_by"] = submitted_by
+        return "completed", {"stdout": "ok"}
+
+    monkeypatch.setattr(kexec, "run_shell_task", _fake_run_shell_task)
+    row = TaskRow(task_id="ID-SUB", task="echo hi", submitted_by="hanuman")
+    status, _ = kexec.execute_task_row(row)
+    assert status == "completed"
+    assert seen["submitted_by"] == "hanuman"
+
+
+def test_execute_task_row_forwards_empty_submitted_by(monkeypatch):
+    """An anonymous/unattributed row (submitted_by="") must not silently
+    inherit some other identity -- run_shell_task sees the same empty
+    string, which is what makes kart_env leave git identity env unset."""
+    seen = {}
+
+    def _fake_run_shell_task(cmd, *, timeout=None, context="poll", submitted_by=""):
+        seen["submitted_by"] = submitted_by
+        return "completed", {"stdout": "ok"}
+
+    monkeypatch.setattr(kexec, "run_shell_task", _fake_run_shell_task)
+    row = TaskRow(task_id="ID-ANON", task="echo hi")
+    kexec.execute_task_row(row)
+    assert seen["submitted_by"] == ""
+
+
+def test_run_shell_task_threads_submitted_by_to_kart_env(monkeypatch):
+    """The three untested middle hops: run_shell_task -> _run_one_shell ->
+    run_shell_result_for_task -> run_shell -> kart_env. Loki 0E7F0C89 K1:
+    dropping submitted_by at any one of run_shell->kart_env,
+    run_shell_result_for_task->run_shell, or _run_one_shell->
+    run_shell_result_for_task left 99/99 green because prior coverage only
+    exercised the two ends (execute_task_row -> a fake run_shell_task, and
+    kart_env called directly). This drives the real run_shell_task, with
+    bwrap disabled (WILLOW_KART_NO_BWRAP=1, set file-wide above), down to a
+    spy on sandbox.kart_env itself -- cutting any middle hop now goes red."""
+    from kartikeya import sandbox
+
+    seen = []
+    real_kart_env = sandbox.kart_env
+
+    def _spy_kart_env(*args, submitted_by="", **kwargs):
+        seen.append(submitted_by)
+        return real_kart_env(*args, submitted_by=submitted_by, **kwargs)
+
+    monkeypatch.setattr(sandbox, "kart_env", _spy_kart_env)
+    status, _result = kexec.run_shell_task("echo hi", submitted_by="hanuman-spy")
+    assert status == "completed"
+    # kart_env is also called a second, harmless time by sandbox_manifest()
+    # (K6 INFO -- that caller never threads submitted_by, by design: it only
+    # wants PATH). The identity thread under test is proven by "hanuman-spy"
+    # appearing at all, not by it being the last call recorded.
+    assert "hanuman-spy" in seen
