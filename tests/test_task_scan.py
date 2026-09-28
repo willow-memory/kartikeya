@@ -4,7 +4,6 @@ Exercises the vendored security_scan through task_scan's public entry
 (check_kart_task) plus the host-configurable hook-tamper guard.
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -852,22 +851,66 @@ def test_benign_task_with_no_control_characters_is_unaffected():
 
 
 # ── CodeQL py/overly-large-range: `_CONTROL_CHARACTERS` (an explicit
-# frozenset) replaced the old regex character class
-# `[\x00-\x08\x0b-\x1f\x7f\u0085\u2028\u2029]` so there is nothing left for
-# the range-typo heuristic to flag. This test is the equality proof: it
-# compiles the OLD pattern itself, from its own literal source (never
-# imported from task_scan), and checks every one of the 0x110000 code
-# points agrees between old-regex-membership and new-set-membership. It
-# also pins the audited count (Loki 768E1043: 34 code points).
-_OLD_CONTROL_CHARACTER_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f\u0085\u2028\u2029]")
+# frozenset) replaced the old regex character class that spelled its
+# members as bracketed ranges, so there is nothing left for the
+# range-typo heuristic to flag. This test is the equality proof: it
+# builds a reference set from its own literal list of code points (never
+# imported from task_scan, no `range`, no regex) and checks every one of
+# the 0x110000 code points agrees between reference-set-membership and
+# new-set-membership. It also pins the audited count (Loki 768E1043: 34
+# code points).
+_OLD_CONTROL_CHARACTER_CODEPOINTS = (
+    # C0 controls NUL..BS (9)
+    0x00,
+    0x01,
+    0x02,
+    0x03,
+    0x04,
+    0x05,
+    0x06,
+    0x07,
+    0x08,
+    # C0 controls VT..US (21)
+    0x0B,
+    0x0C,
+    0x0D,
+    0x0E,
+    0x0F,
+    0x10,
+    0x11,
+    0x12,
+    0x13,
+    0x14,
+    0x15,
+    0x16,
+    0x17,
+    0x18,
+    0x19,
+    0x1A,
+    0x1B,
+    0x1C,
+    0x1D,
+    0x1E,
+    0x1F,
+    # DEL
+    0x7F,
+    # NEL (Unicode NEXT LINE)
+    0x85,
+    # LINE SEPARATOR
+    0x2028,
+    # PARAGRAPH SEPARATOR
+    0x2029,
+)
 
 
 def test_control_characters_set_equals_old_regex_for_every_code_point():
+    reference = frozenset(map(chr, _OLD_CONTROL_CHARACTER_CODEPOINTS))
+    assert task_scan._CONTROL_CHARACTERS == reference
     for cp in range(0x110000):
         ch = chr(cp)
-        assert (ch in task_scan._CONTROL_CHARACTERS) == bool(
-            _OLD_CONTROL_CHARACTER_RE.match(ch)
-        ), f"mismatch at U+{cp:04X}"
+        assert (ch in task_scan._CONTROL_CHARACTERS) == (ch in reference), (
+            f"mismatch at U+{cp:04X}"
+        )
 
 
 def test_control_characters_set_has_exactly_34_members():
