@@ -29,6 +29,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sysconfig
 import tempfile
@@ -1341,6 +1342,16 @@ def _limits_context(limits: dict):
     return None, None, "rlimit"
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the process group led by ``proc`` (see start_new_session in
+    run_shell), then reap ``proc``. The group may already be gone."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        proc.kill()
+    proc.wait()
+
+
 def run_shell(
     cmd: str,
     *,
@@ -1420,24 +1431,42 @@ def run_shell(
         return "ok" if '"child-pid"' in txt else "failed"
 
     try:
-        proc = subprocess.run(
+        # start_new_session puts the task in its own process group so a timeout
+        # kills the whole tree, not just the direct child. subprocess.run's own
+        # timeout kills only that child: in plain mode a backgrounded
+        # grandchild (`sleep 600 &`) outlived its timed-out task. Under bwrap
+        # --die-with-parent + --unshare-pid already tear the tree down; the
+        # group kill is the backstop there.
+        with subprocess.Popen(
             full,
             shell=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=run_env,
             cwd=cwd,
             pass_fds=pass_fds,
             preexec_fn=preexec_fn,
-            check=False,
-        )
+            start_new_session=True,
+        ) as proc:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as e:
+                _kill_process_group(proc)
+                # Drain what the tree wrote before it died; bounded, since a
+                # descendant that escaped the group could hold the pipes open.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    e.stdout, e.stderr = proc.communicate(timeout=5)
+                raise
+            except BaseException:
+                _kill_process_group(proc)
+                raise
         elapsed = round(time.time() - started, 2)
         setup = _setup_state()
         out = {
             "returncode": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
+            "stdout": stdout,
+            "stderr": stderr,
             "elapsed_s": elapsed,
             "sandbox": sandbox,
         }

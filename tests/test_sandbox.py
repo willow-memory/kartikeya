@@ -8,6 +8,7 @@ that willow-mcp's B-21 strip depends on.
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -631,3 +632,38 @@ def test_bash_lookup_skips_the_system_directory_and_takes_the_next_one(tmp_path)
     assert found(path, str(tmp_path / "Windows")) == os.path.normcase(str(git / name))
     assert found(str(system), str(tmp_path / "Windows")) is None
     assert found(path, None) == os.path.normcase(str(system / name))
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie still answers kill(0); count it as dead.
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().split(") ", 1)[1][0] != "Z"
+    except OSError:
+        return False
+
+
+@pytest.mark.parametrize("stdout_open", [False, True])
+def test_timeout_kills_backgrounded_grandchild(tmp_path, monkeypatch, stdout_open):
+    # A timed-out task must take its whole process tree with it. Before the
+    # process-group kill, plain mode left a backgrounded `sleep` running after
+    # the task was reported "timeout". stdout_open=True keeps the grandchild on
+    # the captured pipe, the case that can also stall the drain.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    pidfile = tmp_path / "grandchild.pid"
+    redirect = "" if stdout_open else " >/dev/null 2>&1"
+    cmd = f"sleep 60{redirect} & echo $! > {pidfile}; sleep 60"
+    started = time.time()
+    result = sandbox.run_shell(cmd, timeout=1)
+    assert result["error"] == "timeout", result
+    assert time.time() - started < 15
+    pid = int(pidfile.read_text())
+    deadline = time.time() + 5
+    while _pid_alive(pid) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not _pid_alive(pid), f"grandchild {pid} outlived the timed-out task"
