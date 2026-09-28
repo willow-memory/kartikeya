@@ -115,7 +115,7 @@ def _normalize_shell_result(raw: dict) -> dict:
         out = {"returncode": raw["returncode"], **out}
     if raw.get("error"):
         out["error"] = raw["error"]
-    for _k in ("sandbox_manifest", "sandbox_setup"):
+    for _k in ("sandbox_manifest", "sandbox_setup", "resource_limit"):
         if raw.get(_k) is not None:
             out[_k] = raw[_k]
     return out

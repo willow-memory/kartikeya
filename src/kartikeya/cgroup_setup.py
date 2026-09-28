@@ -124,8 +124,9 @@ def cgroup_parent_state() -> tuple[str | None, str | None]:
     ``usable`` is the best delegated parent: an explicit ``KART_CGROUP_PARENT``,
     else the auto-detected kart.slice. When neither is usable,
     ``configured_but_unusable`` names what the operator did configure (the
-    env var, or a kart.slice that exists but has lost its delegation, e.g.
-    subtree_control reset by a daemon-reload), so a caller can refuse rather
+    env var, a kart.slice that exists but has lost its delegation, e.g.
+    subtree_control reset by a daemon-reload, or an installed kart.slice unit
+    that is not running), so a caller can refuse rather
     than quietly run without the memory cap it was set up for. Both are None
     when no cgroup parent is configured at all.
     """
@@ -135,7 +136,13 @@ def cgroup_parent_state() -> tuple[str | None, str | None]:
     auto = systemd_cgroup_path()
     if auto and is_delegated_cgroup_parent(auto):
         return auto, None
-    return None, (explicit or auto or None)
+    # An installed kart.slice unit that is not running (e.g. after a reboot,
+    # before the slice is started) has no cgroup for systemd to report, so it
+    # looked exactly like "never set up" and tasks ran without a memory cap.
+    # The unit file is the operator's intent; it counts as configured.
+    installed = slice_unit_path()
+    installed_unit = str(installed) if installed.is_file() else None
+    return None, (explicit or auto or installed_unit)
 
 
 def resolve_cgroup_parent() -> str | None:
