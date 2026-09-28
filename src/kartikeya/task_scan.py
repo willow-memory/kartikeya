@@ -536,8 +536,8 @@ def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]
 # which read the text as written, never see those words.
 #
 # Operator ruling on #92 (union approach): every check reads the text as
-# written AND the quote-stripped copy, whole, heredoc bodies included, and a
-# hit in either refuses. Nothing here models bash to decide that some text is
+# written AND its quote-stripped copies (whole, and line by line), heredoc
+# bodies included, and a hit in any refuses. Nothing here models bash to decide that some text is
 # data or a mere mention: that precision (quote pairing, command position,
 # heredoc parsing) belongs to the parser bites. The cost is that a quoted
 # mention (`grep -rn 'systemctl' src/`) is refused like the command it names.
@@ -559,10 +559,15 @@ def _quote_normalised(text: str) -> str:
 
 
 def _scan_texts(text: str) -> tuple[str, ...]:
-    """The text as written, and its quote-stripped copy when that differs.
-    Every check reads both, and a hit in either refuses."""
-    normalised = _quote_normalised(text)
-    return (text,) if normalised == text else (text, normalised)
+    """The text as written, its quote-stripped copy, and the same strip
+    applied line by line. Every check reads all of them, and a hit in any
+    refuses. The per-line copy matters where the whole-text strip joins two
+    lines: an escaped backslash ending one line (`x\\\\`) reads as a
+    backslash-newline to the whole-text strip, so the next line's command
+    word would lose its place at the start of a command."""
+    whole = _quote_normalised(text)
+    per_line = "\n".join(_quote_normalised(line) for line in text.split("\n"))
+    return tuple(dict.fromkeys((text, whole, per_line)))
 
 
 def _scan_shell_fragment(fragment: str) -> ScanIssue | None:

@@ -1241,9 +1241,41 @@ def test_a_stray_quote_does_not_hide_a_split_protected_path(setup, monkeypatch):
     assert refusal["kart_scan"]["category"] == "hook_tamper"
 
 
-def test_every_check_reads_the_text_as_written_and_the_stripped_copy():
+def test_every_check_reads_the_text_as_written_and_the_stripped_copies():
     assert task_scan._scan_texts("sys''temctl") == ("sys''temctl", "systemctl")
     assert task_scan._scan_texts("plain") == ("plain",)
+    # an escaped backslash ending a line: the whole-text strip joins the
+    # lines, the per-line strip does not
+    assert task_scan._scan_texts("x\\\\\nsys''temctl") == (
+        "x\\\\\nsys''temctl",
+        "xsystemctl",
+        "x\\\nsystemctl",
+    )
+
+
+def test_a_line_after_an_escaped_backslash_is_still_a_command():
+    # Loki 2F3B108A item 1: bash reads `\\` as a literal backslash, so the
+    # newline after it ends the command and `sys''temctl` starts the next.
+    refusal = task_scan.check_kart_task("echo x\\\\\nsys''temctl --user restart x")
+    assert refusal is not None
+    assert refusal["kart_scan"]["category"] == "systemd_manager"
+
+
+def test_the_systemd_check_still_reads_the_text_as_written():
+    # Loki 2F3B108A item 2 (U2): stripped, `systemctl'x'` becomes
+    # `systemctlx`, which the rule does not match; as written it does.
+    refusal = task_scan.check_kart_task("systemctl'x' --user restart y")
+    assert refusal is not None
+    assert refusal["kart_scan"]["category"] == "systemd_manager"
+
+
+def test_the_hook_check_still_reads_the_text_as_written(monkeypatch):
+    # Loki 2F3B108A item 2 (U4): a protected path with a backslash in it is
+    # only found as written, since the stripped copies drop the backslash.
+    monkeypatch.setattr(task_scan, "HOOK_GUARD_FRAGMENTS", ("hooks\\runner.py",))
+    refusal = task_scan.check_kart_task("type hooks\\runner.py")
+    assert refusal is not None
+    assert refusal["kart_scan"]["category"] == "hook_tamper"
 
 
 # The ruling's accepted cost, pinned so that modelling mentions again is a
