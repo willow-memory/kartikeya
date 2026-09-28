@@ -31,6 +31,19 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.3.4](https://github.com/willow-memory/kartikeya/compare/v0.3.3...v0.3.4) (2026-09-28)
+
+
+### Fixed
+
+* **sandbox:** decode task output as UTF-8 on every platform ([82056de](https://github.com/willow-memory/kartikeya/commit/82056de64a1363742127ba83cc3c81b126f3a563))
+* **sandbox:** decode task output with replacement, not strictly ([2f9c887](https://github.com/willow-memory/kartikeya/commit/2f9c88721400a75b6e02b4d907c00fa94dfcd811))
+* **sandbox:** keep partial output when the post-timeout drain times out ([256163e](https://github.com/willow-memory/kartikeya/commit/256163e800421218d07710f8332506a26c05ed90))
+* **sandbox:** kill the task tree on Windows timeouts with taskkill /T ([1f9f230](https://github.com/willow-memory/kartikeya/commit/1f9f230192842a7543b4a575cb02a1ae265cc540))
+* **sandbox:** join the task cgroup with an exec wrapper, not preexec_fn ([733b0b8](https://github.com/willow-memory/kartikeya/commit/733b0b830cd1a23fc16848d54b3d083ff1e0113b))
+* **sandbox:** satisfy pinned ruff and keep Windows working ([6c5b1cc](https://github.com/willow-memory/kartikeya/commit/6c5b1cc0d3d41712aa3ab4ee228504879ed041a4))
+* **sandbox:** kill the whole process tree when a task times out ([a718176](https://github.com/willow-memory/kartikeya/commit/a7181763babce248a61b91795458b59733772c1a))
+
 ## [0.3.3](https://github.com/willow-memory/kartikeya/compare/v0.3.2...v0.3.3) (2026-09-28)
 
 
