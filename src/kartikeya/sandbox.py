@@ -1603,31 +1603,42 @@ def run_shell(
         if resource_mode == "rlimit":
             cmd = wrap_task_with_rlimits(cmd, limits)
 
-    # Use bash -c so shell operators (&&, |, $(), redirects) work correctly.
-    bash = _sandbox_bash()
-    argv = [bash, "-c", cmd]
-    sandbox = "plain"
-    pass_fds: tuple[int, ...] = ()
+    # From here the task's cgroup leaf exists. Anything that raises before the
+    # main try (argv build, bwrap probe, temp file) must not leak it, or the
+    # status file's fd: clean up and re-raise, so the caller sees the same error.
     status_file = None
-    if use_bwrap():
-        prefix = build_bwrap_argv(
-            allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db
-        )
-        # KP3/S15: --json-status-fd lets us tell a sandbox-SETUP failure (mount/ns
-        # error, bwrap exits before exec) from a COMMAND failure. bwrap writes
-        # {"child-pid":N} once the child execs; its absence on a non-zero exit
-        # means setup failed. Feature-gated so an old bwrap is unaffected.
-        if _bwrap_supports_json_status():
-            status_file = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 — closed in the finally below; the fd must outlive this block
-            fd = status_file.fileno()
-            prefix = [prefix[0], "--json-status-fd", str(fd)] + prefix[1:]
-            pass_fds = (fd,)
-        full = prefix + ["--", bash, "-c", cmd]
-        sandbox = "bwrap"
-    else:
-        full = argv
-    if limits_prefix:
-        full = limits_prefix + full
+    try:
+        # Use bash -c so shell operators (&&, |, $(), redirects) work correctly.
+        bash = _sandbox_bash()
+        argv = [bash, "-c", cmd]
+        sandbox = "plain"
+        pass_fds: tuple[int, ...] = ()
+        if use_bwrap():
+            prefix = build_bwrap_argv(
+                allow_net=allow_net, allow_localhost=allow_localhost, allow_db=allow_db
+            )
+            # KP3/S15: --json-status-fd lets us tell a sandbox-SETUP failure (mount/ns
+            # error, bwrap exits before exec) from a COMMAND failure. bwrap writes
+            # {"child-pid":N} once the child execs; its absence on a non-zero exit
+            # means setup failed. Feature-gated so an old bwrap is unaffected.
+            if _bwrap_supports_json_status():
+                status_file = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 — closed in the finally below; the fd must outlive this block
+                fd = status_file.fileno()
+                prefix = [prefix[0], "--json-status-fd", str(fd)] + prefix[1:]
+                pass_fds = (fd,)
+            full = prefix + ["--", bash, "-c", cmd]
+            sandbox = "bwrap"
+        else:
+            full = argv
+        if limits_prefix:
+            full = limits_prefix + full
+    except BaseException:
+        if cleanup is not None:
+            cleanup()
+        if status_file is not None:
+            with contextlib.suppress(Exception):
+                status_file.close()
+        raise
 
     def _setup_state() -> str | None:
         if status_file is None:
