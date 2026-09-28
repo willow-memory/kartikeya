@@ -530,28 +530,89 @@ def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]
 
 
 # Quote removal, roughly as bash does it, for a second pass of the text rules
-# (bite B0 of docs/design/parser-scanner.md). bash drops quotes and escaping
-# backslashes before running a word, so `c'u'rl`, `c\url`, `$'cu'rl` and
-# `~/.s''sh` run as `curl` and `~/.ssh` while the rules, which read the text
-# as written, never see those words. The copy is only ever scanned in
-# addition to the original: it can add a block, never lift one. It is an
-# approximation that errs towards removing too much (a backslash inside
-# single quotes is literal to bash, and is dropped here anyway); what it does
-# not model (variables, substitutions, globs, `$'\x..'` escapes) waits for
-# the parser.
+# (bite B0 of docs/design/parser-scanner.md). bash drops quotes, escaping
+# backslashes and backslash-newlines before running a word, so `c'u'rl`,
+# `c\url`, `$'cu'rl`, `cu\<newline>rl` and `~/.s''sh` run as `curl` and
+# `~/.ssh` while the rules, which read the text as written, never see those
+# words. The copies are only ever scanned in addition to the original: they
+# can add a block, never lift one. What they do not model (variables,
+# substitutions, globs, `$'\x..'` escapes) waits for the parser.
+_LINE_CONTINUATION = "\\\n"
 _ANSI_C_QUOTE_RE = re.compile(r"\$(?=['\"])")
 _BACKSLASH_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
 
 
 def _quote_normalised(text: str) -> str:
-    out = _ANSI_C_QUOTE_RE.sub("", text)
+    """Every quote and escaping backslash removed: for the per-fragment rule
+    pass. Errs towards removing too much (a backslash inside single quotes
+    is literal to bash, and is dropped here anyway)."""
+    out = text.replace(_LINE_CONTINUATION, "")
+    out = _ANSI_C_QUOTE_RE.sub("", out)
     out = _BACKSLASH_ESCAPE_RE.sub(r"\1", out)
     return out.replace("'", "").replace('"', "")
 
 
-def _scan_texts(text: str) -> tuple[str, ...]:
-    """The text as written, and its quote-normalised copy when that differs."""
-    normalised = _quote_normalised(text)
+# Outside quotes, these end a word as far as a quoted mention is concerned:
+# shell operators, and the brackets and commas of the Python or JSON a
+# heredoc often carries (`["systemctl", ...]`).
+_WORD_BREAKS = frozenset(";|&()<>[]{},=")
+
+
+def _word_internal_normalised(text: str) -> str:
+    """Quotes and escapes removed only inside a word built from more than one
+    piece (`sys''temctl`, `c'u'rl`, `run\\ner.py`), which bash runs as one
+    word; a word that is a single quoted string (`'systemctl'`, as in
+    `grep -rn 'systemctl' src/`) is a mention and is kept as written.
+    Backslash-newlines are removed everywhere, as bash removes them. For the
+    whole-text substring checks, which see every mention in the task."""
+    out: list[str] = []
+    pieces: list[tuple[str, str]] = []  # (as written, as bash reads it)
+
+    def flush() -> None:
+        if len(pieces) > 1:
+            out.append("".join(inner for _raw, inner in pieces))
+        else:
+            out.append("".join(raw for raw, _inner in pieces))
+        pieces.clear()
+
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            if text[i + 1] != "\n":
+                pieces.append((text[i : i + 2], text[i + 1]))
+            i += 2  # a backslash-newline is removed, and the word goes on
+        elif ch in "'\"" or (ch == "$" and i + 1 < n and text[i + 1] in "'\""):
+            q = i + 1 if ch == "$" else i
+            end = text.find(text[q], q + 1)
+            if end < 0:  # unterminated: the rest is one piece, as written
+                pieces.append((text[i:], text[i:]))
+                i = n
+            else:
+                pieces.append((text[i : end + 1], text[q + 1 : end]))
+                i = end + 1
+        elif ch.isspace() or ch in _WORD_BREAKS:
+            flush()
+            out.append(ch)
+            i += 1
+        else:
+            j = i
+            while j < n and not (
+                text[j].isspace() or text[j] in _WORD_BREAKS or text[j] in "'\"\\"
+            ):
+                if text[j] == "$" and j + 1 < n and text[j + 1] in "'\"":
+                    break
+                j += 1
+            j = max(j, i + 1)  # always advance, whatever the text
+            pieces.append((text[i:j], text[i:j]))
+            i = j
+    flush()
+    return "".join(out)
+
+
+def _scan_texts(text: str, normalise=_quote_normalised) -> tuple[str, ...]:
+    """The text as written, and its normalised copy when that differs."""
+    normalised = normalise(text)
     return (text,) if normalised == text else (text, normalised)
 
 
@@ -789,7 +850,7 @@ def _hook_tamper_fragment(text: str) -> str | None:
         (
             frag
             for frag in _hook_guard_fragments()
-            if any(frag in t for t in _scan_texts(text))
+            if any(frag in t for t in _scan_texts(text, _word_internal_normalised))
         ),
         None,
     )
@@ -824,7 +885,10 @@ def check_hook_tamper(task_text: str = "", *, script_body: str = "") -> dict | N
 def check_systemd_manager(task_text: str = "", *, script_body: str = "") -> dict | None:
     """Refuse systemctl/busctl in task or script_body — broker verbs only."""
     for where, text in (("task", task_text or ""), ("script_body", script_body or "")):
-        if text and any(_SYSTEMD_MANAGER_RE.search(t) for t in _scan_texts(text)):
+        if text and any(
+            _SYSTEMD_MANAGER_RE.search(t)
+            for t in _scan_texts(text, _word_internal_normalised)
+        ):
             return {
                 "error": _SYSTEMD_MANAGER_REFUSAL,
                 "kart_scan": {

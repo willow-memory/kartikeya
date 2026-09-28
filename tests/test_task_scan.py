@@ -1093,6 +1093,11 @@ def test_a_quote_split_protected_path_is_refused(monkeypatch):
         # quoted `;` would split off `use stash` as a command of its own, and
         # `git reset --hard` would lose the downgrade an allowed verb gives.
         'git commit -m "docs: never run git reset --hard; use stash"',
+        # Loki 0BE745C3 finding 1: a quoted *mention* is not a command. The
+        # whole-text checks only unquote words built from several pieces.
+        "grep -rn 'systemctl' src/",
+        'cat <<EOF\nprint("systemctl is refused here")\nEOF',
+        'cat <<EOF\nsubprocess.run(["systemctl", "--user", "status"])\nEOF',
     ],
 )
 def test_ordinary_quoting_is_still_allowed(task):
@@ -1128,3 +1133,58 @@ def test_quote_normalisation(text, normalised):
 )
 def test_shapes_left_for_the_parser(task):
     assert task_scan.check_kart_task(task) is not None
+
+
+# Loki 0BE745C3 finding 2: bash removes a backslash-newline outright, so a
+# word split across lines runs whole.
+@pytest.mark.parametrize(
+    ("task", "category"),
+    [
+        (f"cu\\\nrl {_EXFIL}", "exfiltration"),
+        (f"cat <<X\nhi\nX\ncu\\\nrl {_EXFIL}", "exfiltration"),
+        ("cat <<X\nhi\nX\nr\\\nm -rf /", "destructive"),
+        ("sys\\\ntemctl --user restart x", "systemd_manager"),
+    ],
+)
+def test_a_word_split_by_a_line_continuation_is_blocked(task, category):
+    refusal = task_scan.check_kart_task(task)
+    assert refusal is not None, task
+    assert refusal["kart_scan"]["category"] == category
+
+
+def test_a_protected_path_split_by_a_line_continuation_is_refused(monkeypatch):
+    monkeypatch.setattr(task_scan, "HOOK_GUARD_FRAGMENTS", ("host/hooks/runner.py",))
+    refusal = task_scan.check_kart_task("cat host/hooks/run\\\nner.py")
+    assert refusal is not None
+    assert refusal["kart_scan"]["category"] == "hook_tamper"
+
+
+# Loki 0BE745C3 finding 3: the text as written is still scanned. These need
+# the backslashes the normalised copy removes.
+@pytest.mark.parametrize(
+    "task",
+    [
+        'echo "\\x72\\x6d -rf ~" | sh',
+        f'eval "\\x63url {_EXFIL}"',
+    ],
+)
+def test_the_text_as_written_is_still_scanned(task):
+    assert task_scan.check_kart_task(task) is not None, task
+
+
+@pytest.mark.parametrize(
+    ("text", "normalised"),
+    [
+        ("sys''temctl", "systemctl"),
+        ("c'u'rl -x", "curl -x"),
+        ("$'cu'rl", "curl"),
+        ("sys\\\ntemctl", "systemctl"),
+        ("run\\ner.py", "runner.py"),
+        ("'systemctl' x", "'systemctl' x"),
+        ('["systemctl", "x"]', '["systemctl", "x"]'),
+        ('echo "a b"', 'echo "a b"'),
+        ("it's", "it's"),
+    ],
+)
+def test_word_internal_normalisation(text, normalised):
+    assert task_scan._word_internal_normalised(text) == normalised
