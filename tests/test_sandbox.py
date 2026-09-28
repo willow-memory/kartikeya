@@ -5,8 +5,11 @@ decoupling touched: config resolution order, and the network-directive contract
 that willow-mcp's B-21 strip depends on.
 """
 
+import contextlib
 import json
 import os
+import shutil
+import signal
 import sys
 import time
 from pathlib import Path
@@ -724,3 +727,28 @@ def test_timeout_kills_backgrounded_grandchild(tmp_path, monkeypatch, stdout_ope
     while _pid_alive(pid) and time.time() < deadline:
         time.sleep(0.05)
     assert not _pid_alive(pid), f"grandchild {pid} outlived the timed-out task"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("setsid") is None, reason="needs POSIX setsid(1)"
+)
+def test_timeout_drain_is_bounded_and_keeps_output(tmp_path, monkeypatch):
+    # A descendant that setsid()s out of the task's group escapes the group
+    # kill and keeps the output pipes open. The post-kill drain must stay
+    # bounded (Loki A0814604 B1) and what the task wrote before the timeout
+    # must survive into the result, not be dropped as bytes (B2).
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    pidfile = tmp_path / "escaped.pid"
+    cmd = f"echo hello; echo err >&2; setsid sleep 30 & echo $! > {pidfile}; sleep 30"
+    started = time.time()
+    try:
+        result = sandbox.run_shell(cmd, timeout=1)
+    finally:
+        if pidfile.exists():
+            with contextlib.suppress(ProcessLookupError, ValueError):
+                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+    assert result["error"] == "timeout", result
+    assert time.time() - started < 15
+    assert "hello" in result["stdout"], result
+    assert "err" in result["stderr"], result

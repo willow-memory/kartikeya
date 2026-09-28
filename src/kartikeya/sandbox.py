@@ -1346,6 +1346,14 @@ def _limits_context(limits: dict):
     return None, None, "rlimit"
 
 
+def _timeout_text(data: str | bytes | None) -> str:
+    """Partial output from a TimeoutExpired. communicate() hands it back as
+    raw bytes even in text mode when it times out, so decode rather than drop."""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data or ""
+
+
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """SIGKILL the process group led by ``proc`` (see start_new_session in
     run_shell), then reap ``proc``. The group may already be gone. Windows
@@ -1473,8 +1481,12 @@ def run_shell(
                 _kill_process_group(proc)
                 # Drain what the tree wrote before it died; bounded, since a
                 # descendant that escaped the group could hold the pipes open.
-                with contextlib.suppress(subprocess.TimeoutExpired):
+                # On a second timeout, keep that exception's output: it holds
+                # everything read so far.
+                try:
                     e.stdout, e.stderr = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired as drain:
+                    e.stdout, e.stderr = drain.stdout, drain.stderr
                 raise
             except BaseException:
                 _kill_process_group(proc)
@@ -1500,8 +1512,8 @@ def run_shell(
     except subprocess.TimeoutExpired as e:
         return {
             "returncode": -1,
-            "stdout": (e.stdout or "") if isinstance(e.stdout, str) else "",
-            "stderr": (e.stderr or "") if isinstance(e.stderr, str) else "",
+            "stdout": _timeout_text(e.stdout),
+            "stderr": _timeout_text(e.stderr),
             "elapsed_s": round(time.time() - started, 2),
             "error": "timeout",
             "sandbox": sandbox,
