@@ -31,6 +31,15 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.3.4](https://github.com/willow-memory/kartikeya/compare/v0.3.3...v0.3.4) (2026-09-28)
+
+
+### Fixed
+
+* **sandbox:** decode task output as UTF-8 on every platform ([82056de](https://github.com/willow-memory/kartikeya/commit/82056de64a1363742127ba83cc3c81b126f3a563))
+* **sandbox:** decode task output with replacement, not strictly ([2f9c887](https://github.com/willow-memory/kartikeya/commit/2f9c88721400a75b6e02b4d907c00fa94dfcd811))
+* **sandbox:** kill the whole process tree when a task times out ([6511201](https://github.com/willow-memory/kartikeya/commit/6511201aaf8294d8016ed0c6eefd256cd0bd9c82))
+
 ## [0.3.3](https://github.com/willow-memory/kartikeya/compare/v0.3.2...v0.3.3) (2026-09-28)
 
 
