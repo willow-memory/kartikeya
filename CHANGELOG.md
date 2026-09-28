@@ -31,6 +31,16 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.5.1](https://github.com/willow-memory/kartikeya/compare/v0.5.0...v0.5.1) (2026-09-28)
+
+
+### Fixed
+
+* **landlock:** check the bind root's inode; CI requires the sandbox tests ([ff1014a](https://github.com/willow-memory/kartikeya/commit/ff1014a1cebb5325fb57bc66e825100f76ac1868))
+* **landlock:** don't carve around read-only mounts, so git works under bwrap ([2cc08b1](https://github.com/willow-memory/kartikeya/commit/2cc08b105eed97ff3a9ebf66883d320db4406719))
+* **landlock:** carve by fd with O_NOFOLLOW, matching paths by inode ([7e5150e](https://github.com/willow-memory/kartikeya/commit/7e5150e33695e26178636834b31a63e997baab41))
+* **landlock:** symlink-safe carving, carving warning, audit follow-ups ([a09902e](https://github.com/willow-memory/kartikeya/commit/a09902e587d1072c4600176762a1f989fe918d8b))
+
 ## [0.5.0](https://github.com/willow-memory/kartikeya/compare/v0.4.6...v0.5.0) (2026-09-28)
 
 
