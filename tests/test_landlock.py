@@ -460,7 +460,7 @@ def test_carved_directories_are_listed():
 
 @pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
 def test_carving_is_announced_once(nested, monkeypatch, caplog):
-    monkeypatch.setattr(landlock, "_warned_carving", frozenset())
+    monkeypatch.setattr(landlock, "_warned_carving", set())
     monkeypatch.setattr(landlock, "landlock_abi", lambda: 7)
     monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *a, **k: 1 / 0)
     rw, _, _ = nested
@@ -470,3 +470,102 @@ def test_carving_is_announced_once(nested, monkeypatch, caplog):
     carved = [r for r in caplog.records if "carved" in r.getMessage()]
     assert len(carved) == 1, caplog.text
     assert str(rw) in carved[0].getMessage()
+
+
+# ── Loki 62EE349F ────────────────────────────────────────────────────────────
+
+
+@needs_landlock
+def test_a_symlink_in_a_carved_directory_grants_nothing(nested):
+    # F2: a link in a carved directory pointing into the read-only subtree
+    # must get no rule. Followed, it would give the directory it points at
+    # read-write rights, beneath the read-only path.
+    rw, locked, _ = nested
+    (locked / "sub").mkdir()
+    (locked / "sub" / "f").write_text("orig\n")
+    (rw / "link").symlink_to(locked / "sub")
+    result = sandbox.run_shell(
+        f"(echo EVIL > {rw}/link/f) 2>/dev/null || echo via-link-denied; "
+        f"(echo x > {rw}/link/new) 2>/dev/null || echo create-denied",
+        timeout=20,
+    )
+    assert result["stdout"].split() == ["via-link-denied", "create-denied"], result
+    assert (locked / "sub" / "f").read_text() == "orig\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
+def test_carving_is_announced_under_bwrap_too(tmp_path, monkeypatch, caplog):
+    # F3: the bwrap path reads its rules from the bwrap argv; it warns too.
+    rw = tmp_path / "rw"
+    monkeypatch.setenv("KART_LANDLOCK", "auto")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    monkeypatch.setattr(landlock, "_warned_carving", set())
+    monkeypatch.setattr(landlock, "landlock_abi", lambda: 7)
+    monkeypatch.setattr(sandbox, "use_bwrap", lambda: True)
+    monkeypatch.setattr(sandbox, "_bwrap_supports_json_status", lambda: False)
+    monkeypatch.setattr(
+        sandbox.cgroup_setup, "cgroup_parent_state", lambda: (None, None)
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "build_bwrap_argv",
+        lambda **k: [
+            "bwrap",
+            "--bind",
+            str(rw),
+            str(rw),
+            "--ro-bind",
+            str(rw / ".git" / "hooks"),
+            str(rw / ".git" / "hooks"),
+        ],
+    )
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *a, **k: 1 / 0)
+    with caplog.at_level(logging.WARNING, logger=landlock._log.name):
+        sandbox.run_shell("true", timeout=20)
+    carved = [r for r in caplog.records if "carved" in r.getMessage()]
+    assert len(carved) == 1 and str(rw / ".git") in carved[0].getMessage()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
+def test_carved_dirs_resolves_symlinks(tmp_path):
+    # F4: the same view as the launcher, which resolves before carving.
+    rw = tmp_path / "rw"
+    (rw / "a").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(rw)
+    want = [str(rw), str(rw / "a")]
+    assert landlock.carved_dirs([str(link)], [str(rw / "a" / "b")]) == want
+    assert landlock.carved_dirs([str(rw)], [str(link / "a" / "b")]) == want
+
+
+def test_alternating_carving_sets_warn_once_each(monkeypatch, caplog):
+    # F5: remembering only the last set warned on every task.
+    monkeypatch.setattr(landlock, "_warned_carving", set())
+    with caplog.at_level(logging.WARNING, logger=landlock._log.name):
+        for _ in range(3):
+            landlock.warn_carving_once(["/a"])
+            landlock.warn_carving_once(["/b"])
+    assert len([r for r in caplog.records if "carved" in r.getMessage()]) == 2
+
+
+@needs_landlock
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0, reason="root can list a mode-000 dir"
+)
+def test_an_unlistable_directory_deeper_in_the_carve_refuses_the_task(
+    box, tmp_path, monkeypatch
+):
+    # The walk must refuse at every level, not only at the bind itself.
+    rw, _, _ = box
+    git = rw / "repo" / ".git"
+    (git / "hooks").mkdir(parents=True)
+    _add_ro(git / "hooks")
+    monkeypatch.setenv("KART_LANDLOCK", "enforce")
+    marker = tmp_path / "ran"
+    git.chmod(0o300)
+    try:
+        result = sandbox.run_shell(f"touch {marker}", timeout=20)
+    finally:
+        git.chmod(0o755)
+    assert result["error"] == "landlock_failed", result
+    assert not marker.exists()

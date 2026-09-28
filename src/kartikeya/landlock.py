@@ -142,11 +142,10 @@ def carved_dirs(rw_paths, ro_paths) -> list[str]:
     be created, removed or renamed directly in these (the right would be
     inherited by the read-only child), so e.g. ``git commit`` fails in a
     repo whose ``.git/hooks`` is read-only: it cannot write .git/index.lock.
-    Paths are compared as given (the launcher resolves symlinks too; this
-    host-side view is for the warning)."""
-    ro = [os.path.normpath(str(p)) for p in ro_paths]
+    Paths are resolved through symlinks, as the launcher resolves them."""
+    ro = [os.path.realpath(str(p)) for p in ro_paths]
     out: set[str] = set()
-    for r in (os.path.normpath(str(p)) for p in rw_paths):
+    for r in (os.path.realpath(str(p)) for p in rw_paths):
         prefix = r.rstrip("/") + "/"
         for d in ro:
             if d.startswith(prefix):
@@ -159,18 +158,19 @@ def carved_dirs(rw_paths, ro_paths) -> list[str]:
     return sorted(out)
 
 
-_warned_carving: frozenset[str] = frozenset()
+# Every set already announced, not just the last: two policies alternating
+# on one worker would otherwise warn on every task.
+_warned_carving: set[frozenset[str]] = set()
 
 
 def warn_carving_once(carved: list[str]) -> None:
     """Say once per distinct set, loudly, which directories lose create and
     remove rights under Landlock. The cost is otherwise invisible until a
     task (a git commit, typically) fails with EACCES."""
-    global _warned_carving
     key = frozenset(carved)
-    if not carved or key == _warned_carving:
+    if not carved or key in _warned_carving:
         return
-    _warned_carving = key
+    _warned_carving.add(key)
     shown = ", ".join(carved[:5]) + (
         f", … (+{len(carved) - 5})" if len(carved) > 5 else ""
     )
@@ -275,10 +275,19 @@ ruleset, err = call(444, ctypes.byref(attr), ctypes.c_size_t(size), ctypes.c_uin
 if ruleset < 0:
     fail("create_ruleset: %s" % err)
 
-def add_rule(path, access):
+def add_rule_fd(fd, access, what):
     # struct landlock_path_beneath_attr is packed: u64 allowed_access, s32
     # parent_fd (12 bytes). Built with struct, not a packed ctypes Structure,
     # which Python 3.14 deprecates.
+    allowed = access & handled
+    if not stat.S_ISDIR(os.fstat(fd).st_mode):
+        allowed &= FILE_RIGHTS
+    buf = ctypes.create_string_buffer(struct.pack("=Qi", allowed, fd), 12)
+    r, err = call(445, ctypes.c_int(ruleset), ctypes.c_int(1), buf, ctypes.c_uint32(0))
+    if r < 0:
+        fail("add_rule %s: %s" % (what, err))
+
+def add_rule(path, access):
     try:
         fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     except FileNotFoundError:
@@ -286,13 +295,7 @@ def add_rule(path, access):
     except OSError as e:
         fail("open %s: %s" % (path, e))
     try:
-        allowed = access & handled
-        if not stat.S_ISDIR(os.fstat(fd).st_mode):
-            allowed &= FILE_RIGHTS
-        buf = ctypes.create_string_buffer(struct.pack("=Qi", allowed, fd), 12)
-        r, err = call(445, ctypes.c_int(ruleset), ctypes.c_int(1), buf, ctypes.c_uint32(0))
-        if r < 0:
-            fail("add_rule %s: %s" % (path, err))
+        add_rule_fd(fd, access, path)
     finally:
         os.close(fd)
 
@@ -306,38 +309,98 @@ def norm(p):
 def under(child, parent):
     return child != parent and child.startswith(parent.rstrip("/") + "/")
 
-ro_paths = [norm(p) for p in spec["ro"]]
+def ident(st):
+    return (st.st_dev, st.st_ino)
 
-def carve(path, ro_inside):
-    # Landlock only adds rights: a read-write rule on `path` would make every
-    # read-only descendant writable again. So `path` itself gets read-only
-    # rights, and each entry that is not on the way to a read-only subtree
-    # gets read-write; entries that are, recurse. Symlinks get no rule (the
-    # kernel checks their target). A directory that cannot be listed cannot
-    # be carved, so the ruleset is refused.
-    add_rule(path, RO)
+ro_paths = [norm(p) for p in spec["ro"]]
+ro_ids = set()
+for p in ro_paths:
     try:
-        entries = sorted(os.listdir(path))
+        ro_ids.add(ident(os.stat(p)))
     except FileNotFoundError:
-        return
+        pass
     except OSError as e:
-        fail("cannot carve %s around read-only %s: %s" % (path, ro_inside[0], e))
+        fail("stat %s: %s" % (p, e))
+
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+def carve(dfd, label, on_way):
+    # Landlock only adds rights: a read-write rule on this directory would
+    # make every read-only descendant writable again. So it gets read-only
+    # rights, and each entry that is not on the way to a read-only subtree
+    # gets read-write; entries that are, recurse. The walk goes by fd, each
+    # entry opened relative to its parent with O_NOFOLLOW, and entries are
+    # classified by (st_dev, st_ino), never by name: a task on the writable
+    # bind that swaps an entry for a symlink mid-walk gets the link itself,
+    # which is skipped (the kernel checks a link's target, not the link). A
+    # directory that cannot be listed cannot be carved, so the ruleset is
+    # refused.
+    add_rule_fd(dfd, RO, label)
+    try:
+        entries = sorted(os.listdir(dfd))
+    except OSError as e:
+        fail("cannot carve %s: %s" % (label, e))
     for name in entries:
-        child = os.path.join(path, name)
-        if child in ro_inside:
-            continue  # its own read-only rule is added below
-        nested = [d for d in ro_inside if under(d, child)]
-        if nested:
-            carve(child, nested)
-        elif not os.path.islink(child):
-            add_rule(child, RW)
+        child = label.rstrip("/") + "/" + name
+        try:
+            cfd = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dfd)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            fail("open %s: %s" % (child, e))
+        try:
+            st = os.fstat(cfd)
+            if stat.S_ISLNK(st.st_mode) or ident(st) in ro_ids:
+                # A link gets no rule (opened O_NOFOLLOW, a rule would sit on
+                # the link inode and grant nothing; skipped to keep it plain).
+                # A read-only path gets its own rule below.
+                continue
+            if stat.S_ISDIR(st.st_mode) and ident(st) in on_way:
+                try:
+                    sub = os.open(name, DIR_FLAGS, dir_fd=dfd)
+                except OSError as e:
+                    fail("cannot carve %s: %s" % (child, e))
+                try:
+                    if ident(os.fstat(sub)) != ident(st):
+                        fail("%s changed while carving" % child)
+                    carve(sub, child, on_way)
+                finally:
+                    os.close(sub)
+            else:
+                add_rule_fd(cfd, RW, child)
+        finally:
+            os.close(cfd)
 
 for path in (norm(p) for p in spec["rw"]):
     nested = [d for d in ro_paths if under(d, path)]
-    if nested:
-        carve(path, nested)
-    else:
+    if not nested:
         add_rule(path, RW)
+        continue
+    # Every directory from `path` down to (not including) each read-only
+    # path: these are carved, everything else under `path` is read-write.
+    on_way = set()
+    for d in nested:
+        cur = os.path.dirname(d)
+        while True:
+            try:
+                on_way.add(ident(os.stat(cur)))
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                fail("stat %s: %s" % (cur, e))
+            if cur == path or not under(cur, path):
+                break
+            cur = os.path.dirname(cur)
+    try:
+        dfd = os.open(path, DIR_FLAGS)
+    except FileNotFoundError:
+        continue
+    except OSError as e:
+        fail("cannot carve %s: %s" % (path, e))
+    try:
+        carve(dfd, path, on_way)
+    finally:
+        os.close(dfd)
 for path in ro_paths:
     add_rule(path, RO)
 
