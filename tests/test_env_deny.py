@@ -62,7 +62,15 @@ def test_default_deny_strips_the_keyring_but_not_its_siblings(
 
 
 def test_vendored_default_declares_the_deny():
-    assert _vendored()["env_deny"] == ["WILLOW_KEYRING"]
+    """A Kart task carries only its submitter's identity (ruling D, pair
+    b8b24c45): the shipped default now also denies the desk's own seat
+    identity, not just the keyring."""
+    assert _vendored()["env_deny"] == [
+        "WILLOW_KEYRING",
+        "WILLOW_HUMAN_ORCHESTRATOR",
+        "WILLOW_APP_ID",
+        "WILLOW_SESSION_ID",
+    ]
     assert "env_deny" in _vendored()["_security_notes"]
 
 
