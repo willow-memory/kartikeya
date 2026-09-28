@@ -31,6 +31,13 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.5.0](https://github.com/willow-memory/kartikeya/compare/v0.4.6...v0.5.0) (2026-09-28)
+
+
+### Added
+
+* **sandbox:** Landlock as a second filesystem lock behind bwrap ([88ff66c](https://github.com/willow-memory/kartikeya/commit/88ff66c7843de7229de7464300dbe158926ce771))
+
 ## [0.4.6](https://github.com/willow-memory/kartikeya/compare/v0.4.5...v0.4.6) (2026-09-28)
 
 
