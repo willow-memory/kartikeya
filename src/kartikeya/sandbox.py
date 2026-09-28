@@ -1337,7 +1337,7 @@ def _try_make_cgroup(limits: dict) -> str | None:
                 "`kartikeya cgroup-status`"
             )
         return None
-    leaf = os.path.join(parent, f"kart-{os.getpid()}-{uuid.uuid4().hex}")
+    leaf = os.path.join(parent, _leaf_name())
     try:
         os.mkdir(leaf)
     except OSError as e:
@@ -1386,7 +1386,24 @@ def _kill_and_remove_leaf(leaf: str, *, attempts: int = 40) -> bool:
     return False
 
 
-_LEAF_OWNER_RE = re.compile(r"^kart-(\d+)-[0-9a-f]+$")
+# kart-<pid namespace inode>-<owner pid>-<uuid>. The namespace is part of the
+# owner's identity: a pid only means something inside one pid namespace, and
+# several workers (a container among them) can share one cgroup parent.
+_LEAF_OWNER_RE = re.compile(r"^kart-(\d+)-(\d+)-[0-9a-f]{32}$")
+
+
+def _pid_namespace() -> int | None:
+    """Inode of this process's pid namespace, or None where /proc lacks it."""
+    try:
+        return os.stat("/proc/self/ns/pid").st_ino
+    except OSError:
+        return None
+
+
+def _leaf_name() -> str:
+    ns = _pid_namespace()
+    owner = f"{ns}-{os.getpid()}" if ns is not None else f"{os.getpid()}"
+    return f"kart-{owner}-{uuid.uuid4().hex}"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1402,11 +1419,19 @@ def _pid_alive(pid: int) -> bool:
 def sweep_stale_cgroup_leaves() -> list[str]:
     """Remove task leaves left under the cgroup parent by a worker that died.
 
-    A leaf whose owner pid (``kart-<pid>-...``) is no longer running is killed
-    and removed. A live owner's leaves are left alone: several worker
-    processes share one parent. A ``kart-*`` leaf with no recoverable owner is
-    only removed if it is already empty (rmdir refuses a populated cgroup).
-    Returns the leaves removed. Called once at worker start.
+    A leaf is killed and removed only when its owner is provably dead: it
+    was made in *this* pid namespace (``kart-<ns>-<pid>-<uuid>``) and that
+    pid is no longer running. Everything else is left to rmdir, which only
+    succeeds on an already-empty cgroup, and is never killed:
+
+    * a leaf from another pid namespace: its pid means nothing here, and a
+      live worker in a container sharing the parent would otherwise have its
+      running task killed;
+    * a leaf without a namespace in its name (made by kartikeya <= 0.4.x, or
+      where /proc/self/ns/pid is unavailable): its namespace is unknown.
+
+    A live owner's leaves are left alone entirely. Returns the leaves removed.
+    Called once at worker start.
     """
     parent = cgroup_setup.resolve_cgroup_parent()
     if not parent:
@@ -1415,6 +1440,7 @@ def sweep_stale_cgroup_leaves() -> list[str]:
         names = sorted(os.listdir(parent))
     except OSError:
         return []
+    here = _pid_namespace()
     removed: list[str] = []
     for name in names:
         if not name.startswith("kart-"):
@@ -1423,9 +1449,10 @@ def sweep_stale_cgroup_leaves() -> list[str]:
         if not os.path.isdir(leaf):
             continue
         m = _LEAF_OWNER_RE.match(name)
-        if m and _pid_alive(int(m.group(1))):
+        ours = m is not None and here is not None and int(m.group(1)) == here
+        if ours and _pid_alive(int(m.group(2))):
             continue
-        if m:
+        if ours:
             if _kill_and_remove_leaf(leaf, attempts=8):
                 removed.append(leaf)
         else:
