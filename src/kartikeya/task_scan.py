@@ -155,32 +155,168 @@ def _task_cwd() -> str:
     return os.getcwd()
 
 
-def _expand_cd_target(raw: str, current: str) -> str:
-    """The directory a `cd` in the task lands in. The task is a POSIX shell
+_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def _expand_vars(raw: str, task_vars: dict[str, str]) -> str | None:
+    """Substitute `$NAME` / `${NAME}` references in ``raw``. A name assigned
+    earlier in this same task body (``task_vars``) wins over the host env —
+    the task's own shell would see its own assignment first. A name neither
+    assigned in-task nor present in the host env is unresolvable: returns
+    None so the caller can fail closed instead of guessing."""
+    unresolved = False
+
+    def _sub(match: re.Match) -> str:
+        nonlocal unresolved
+        name = match.group(1) or match.group(2)
+        if name in task_vars:
+            return task_vars[name]
+        if name in os.environ:
+            return os.environ[name]
+        unresolved = True
+        return ""
+
+    expanded = _VAR_REF_RE.sub(_sub, raw)
+    return None if unresolved else expanded
+
+
+def _var_assignment(fragment: str) -> tuple[str, str] | None:
+    """A bare `NAME=value` statement — the shape a later `cd $NAME` in the
+    same task body needs resolved. Anchored so `echo a=b` (a command, not an
+    assignment) does not match."""
+    m = _ASSIGN_RE.match(fragment.strip())
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _expand_cd_target(raw: str, current: str, task_vars: dict[str, str]) -> str | None:
+    """The directory a `cd` in the task lands in, or None ("unknown") when a
+    variable reference in it cannot be resolved. The task is a POSIX shell
     command run inside the Linux sandbox, so its paths are joined with
     posixpath whatever the host — `cd src` under `/srv/product` is
     `/srv/product/src` on a Windows host too."""
-    target = os.path.expanduser(os.path.expandvars(raw.strip("'\"")))
+    expanded = _expand_vars(raw.strip("'\""), task_vars)
+    if expanded is None:
+        return None
+    target = os.path.expanduser(expanded)
     return target if posixpath.isabs(target) else posixpath.join(current, target)
+
+
+_STATEMENT_OPERATORS = frozenset({";", "&&", "||"})
+# `|&` (pipe stderr+stdout) is a single punctuation token under
+# `_punctuation_split`'s tokenizer (both chars are in punctuation_chars) — it
+# must be recognised as its own split point or the command on either side of
+# it merges into one simple command, judged only by the leading verb (B2,
+# Loki 918CFAD0).
+_SIMPLE_CMD_OPERATORS = frozenset({";", "&", "|", "&&", "||", "|&"})
+
+
+def _punctuation_split(fragment: str, operators: frozenset[str]) -> list[str] | None:
+    """Quote-aware tokenizer shared by every operator-based split in this
+    module: the punctuation-aware shlex tokenizer (the same quoting engine
+    already used by `_tree_rewrite_verb`), grouped into statements at
+    whichever ``operators`` the caller names. A `;`/`&`/`|` inside quotes is
+    just content, never a split point. Returns None on unbalanced quoting —
+    the caller decides how to fail; see `_split_statement` (fails open, to
+    "don't split") vs `_split_simple_commands` (fails closed, to "not
+    allowed") for the two policies in use."""
+    try:
+        lexer = shlex.shlex(fragment, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        # shlex's default commenters='#' fires on a `#` *inside* a word too
+        # (shlex.py: the commenters check runs before the wordchars check in
+        # word-accumulating state), not only at the start of one — bash only
+        # ever starts a comment at the start of a word. Left at the default,
+        # a mid-word `#` throws away the rest of the *line* via
+        # instream.readline(), silently dropping every simple command after
+        # it (B1, Loki 918CFAD0). A real leading `#` comment line is already
+        # stripped per-line before this ever runs (`_expand_shell_body`), so
+        # turning shlex's own comment handling off here costs nothing.
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return None
+
+    statements: list[str] = []
+    current: list[str] = []
+    for tok in tokens:
+        if tok in operators:
+            if current:
+                statements.append(" ".join(current))
+            current = []
+            continue
+        current.append(tok)
+    if current:
+        statements.append(" ".join(current))
+    return statements
+
+
+def _split_statement(fragment: str) -> list[str]:
+    """Quote-aware split of one shell fragment into its `;`/`&&`/`||`
+    -separated statements, for `check_tree_rewrite`'s cd walk. Unbalanced
+    quoting fails open to "don't split" — dropping part of the fragment
+    silently would be worse for cwd-tracking than scanning it as one piece."""
+    statements = _punctuation_split(fragment, _STATEMENT_OPERATORS)
+    return [fragment] if statements is None else statements
+
+
+def _split_simple_commands(fragment: str) -> list[str] | None:
+    """Quote-aware split of one shell fragment into its `;`/`&`/`|`/`&&`/`||`
+    -separated simple commands, for the fleet-allowance decision in
+    `_fleet_allowed`: every one of these must independently be an allowed
+    verb for the fragment as a whole to count as fleet-allowed. Returns None
+    on unparseable (unbalanced-quote) input — `_fleet_allowed` fails CLOSED
+    on that, the opposite of `_split_statement`'s fail-open contract, because
+    here the cost of guessing wrong is a downgraded security finding."""
+    return _punctuation_split(fragment, _SIMPLE_CMD_OPERATORS)
+
+
+def _statement_fragments(task_text: str) -> list[str]:
+    """Per-statement fragments for `check_tree_rewrite`'s `cd`/verb walk — a
+    finer split than the general security scan needs. Some scan patterns
+    (e.g. `while ...; do ...; done`) depend on seeing a whole compound
+    statement together, so the general scan keeps `_shell_fragments_from_task`
+    as-is; only this tree-rewrite-specific walk also splits on `;`."""
+    fragments: list[str] = []
+    for frag in _shell_fragments_from_task(task_text):
+        fragments.extend(_split_statement(frag))
+    return fragments
 
 
 def check_tree_rewrite(task_text: str = "", *, cwd: str | None = None) -> dict | None:
     """Refuse a git verb that would rewrite the working tree of a checkout the
     mount policy binds read-only. A verb in a read-write checkout, or in the
-    writable lane under a read-only root, passes. See `_tree_rewrite_verb`."""
-    current = cwd or _task_cwd()
-    for fragment in _shell_fragments_from_task(task_text or ""):
+    writable lane under a read-only root, passes. See `_tree_rewrite_verb`.
+
+    Tracks `cd` targets and simple `NAME=value` assignments made earlier in
+    the same task body, so `W=/path; cd $W` resolves against what the task
+    itself set rather than only the host env. A `cd` target that cannot be
+    resolved at all is unknown, and an unknown cwd fails CLOSED here — the
+    opposite of an unresolvable *mount-policy* lookup on a known path, which
+    fails open (see `_dir_read_only`)."""
+    current: str | None = cwd or _task_cwd()
+    task_vars: dict[str, str] = {}
+    for fragment in _statement_fragments(task_text or ""):
         text = fragment.strip()
+        assign = _var_assignment(text)
+        if assign is not None:
+            name, raw_value = assign
+            value = _expand_vars(raw_value.strip("'\""), task_vars)
+            if value is not None:
+                task_vars[name] = value
+            continue
         m = _CD_RE.match(text)
         if m:
-            current = _expand_cd_target(m.group(1), current)
+            current = _expand_cd_target(m.group(1), current or "", task_vars)
             continue
         if not _tree_rewrite_verb(text):
             continue
-        if _dir_read_only(current) is not True:
+        is_blocked = True if current is None else _dir_read_only(current) is True
+        if not is_blocked:
             continue
+        where = current if current is not None else "an unresolved `cd` target"
         message = (
-            f"refuses to rewrite the working tree of {current}, which the mount "
+            f"refuses to rewrite the working tree of {where}, which the mount "
             f"policy binds read-only: this git verb would move refs in the writable "
             f".git and then fail to update files, leaving the checkout half-switched. "
             f"Read verbs, add, commit and `checkout -b NAME` are fine here; do tree "
@@ -224,13 +360,159 @@ def kart_scan_enabled() -> bool:
     )
 
 
+# Backticks, `$(`, `<(`, `>(` are none of shlex's quote chars or this
+# module's punctuation_chars, so with whitespace_split they read as ordinary
+# word characters and stay inside the one simple command that contains them.
+# An allowed verb's own arguments must never vouch for a substitution's
+# payload this way (F4, Loki 918CFAD0 — pre-existing, not a regression).
+_SUBSTITUTION_RE = re.compile(r"`|\$\(|<\(|>\(")
+
+
+def _simple_command_allowed(command: str) -> bool:
+    """Whether ONE simple command (no `;`/`&`/`|` of its own) matches an
+    allowed verb shape. No MULTILINE: a simple command is always one logical
+    line by construction, and `^` must mean the true start of it, not "the
+    start of any line somewhere in a bigger fragment" — that MULTILINE
+    latitude is exactly what let `echo x; <dangerous>` read as allowed."""
+    text = command.strip()
+    if not text:
+        return True
+    if _SUBSTITUTION_RE.search(text):
+        return False
+    return any(re.search(pat, text, re.IGNORECASE) for pat in _FLEET_ALLOWED)
+
+
+_HEREDOC_MARKER_RE = re.compile(r"<<(-)?[ \t]*(['\"]?)(\w+)\2")
+
+
+def _heredoc_marker_on_line(line: str) -> tuple[int, bool, str] | str | None:
+    """Locate a real bash heredoc-start operator on ``line`` — quote-aware,
+    and stopping at a real (unquoted, word-initial) trailing comment, since
+    bash never starts a heredoc inside one. Returns:
+
+      - ``None``: no heredoc operator on this line — either there is no
+        `<<` at all, or what looks like one is definitively NOT a heredoc
+        to bash (inside a real trailing comment, or a `<<<` here-string,
+        which is an argument, not a redirection). The line is then judged
+        as an ordinary command line, same as any other.
+      - ``(start_index, dash, word)``: a plain ``<<WORD`` / ``<<-WORD`` /
+        ``<<'WORD'`` / ``<<"WORD"`` operator with a ``\\w+`` delimiter,
+        found as a real unquoted token. ``dash`` is True for ``<<-`` (bash
+        strips leading TABs, and only TABs, from the terminator line before
+        comparing) and False for plain ``<<`` (bash requires an exact
+        match, no stripping at all) — B4, Loki 6AA36297: the caller used to
+        discard this flag and compare every terminator the same
+        (``.strip()``-loose) way.
+      - ``"invalid"``: a `<<`/`<<-` operator is present whose delimiter
+        shape the walker cannot confidently model (e.g. one containing a
+        non-word character) — B3(c), Loki 918CFAD0: fail CLOSED here,
+        same policy as an unterminated marker below, rather than guess at
+        a delimiter shape bash might read differently.
+    """
+    quote: str | None = None
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            # Real trailing comment: bash does not open a heredoc inside
+            # one — nothing after this point on the line is a heredoc
+            # operator, real or otherwise.
+            return None
+        if ch == "<" and i + 1 < n and line[i + 1] == "<":
+            if (i + 2 < n and line[i + 2] == "<") or (i > 0 and line[i - 1] == "<"):
+                return None  # `<<<` here-string — an argument, not a heredoc
+            m = _HEREDOC_MARKER_RE.match(line, i)
+            if m is None:
+                return "invalid"  # e.g. a non-\w delimiter that \w+ can't fully capture
+            end = m.end()
+            if end < n and line[end] not in " \t":
+                return "invalid"  # delimiter continues past the \w+ capture
+            return (i, bool(m.group(1)), m.group(3))
+        i += 1
+    return None
+
+
+def _fleet_allowed_block(block: str) -> bool:
+    """Fleet-allowance for a heredoc / kept-whole multiline block (see
+    `_expand_shell_body`): allowed only if every COMMAND line in it is
+    allowed. Heredoc payload lines are data, not commands, and are skipped
+    entirely — they never see `_simple_command_allowed`. A shape this can't
+    confidently classify (an opened heredoc marker with no matching
+    terminator line, or a marker `_heredoc_marker_on_line` can't model) is
+    NOT allowed: fail closed, same policy as `_split_simple_commands`
+    returning None.
+
+    Split on `\\n` only (never `.splitlines()`, which also breaks lines on
+    `\\r`, `\\v`, `\\f`, `\\x1c`-`\\x1e`, `\\x85`, U+2028/U+2029 — none of
+    which end a line to bash) — B4, Loki 6AA36297: a payload line carrying
+    one of those characters used to be cut in two, and if the tail half
+    happened to equal the terminator the walker closed the heredoc there,
+    early. The terminator comparison is exact for `<<`; `<<-` strips only
+    leading TABs first (the flag `_heredoc_marker_on_line` now returns) —
+    never `.strip()`, which also ate trailing whitespace and other leading
+    whitespace bash never touches, letting a decoy line close the heredoc
+    before its real terminator. A `\\r` that survives the `\\n`-only split
+    stays part of the line, so it breaks an exact match same as it would
+    for bash — the heredoc goes unterminated, which fails closed here."""
+    lines = block.split("\n")
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        marker = _heredoc_marker_on_line(line)
+        if marker is None:
+            if line.strip() and not _fleet_allowed(line.strip()):
+                return False
+            i += 1
+            continue
+        if marker == "invalid":
+            return False
+        start, dash, terminator = marker
+        before = line[:start].strip()
+        if before and not _fleet_allowed(before):
+            return False
+        i += 1
+        closed = False
+        while i < n:
+            candidate = lines[i].lstrip("\t") if dash else lines[i]
+            if candidate == terminator:
+                closed = True
+                i += 1
+                break
+            i += 1  # heredoc payload line — not a command, not checked
+        if not closed:
+            return False  # unterminated heredoc marker — fail closed
+    return True
+
+
 def _fleet_allowed(fragment: str) -> bool:
+    """A fragment is fleet-allowed only if EVERY simple command inside it is
+    individually an allowed verb (gap: the old any-pattern-match-anywhere
+    check let one allowed verb, e.g. `echo`, vouch for an unrelated command
+    chained after it with `;` on the same line, or on another line of a
+    heredoc/multiline block kept whole under `re.MULTILINE`). A fragment
+    `_split_simple_commands` cannot parse (unbalanced quoting) is NOT
+    allowed: fail closed."""
     text = fragment.strip()
     if not text:
         return True
-    return any(
-        re.search(pat, text, re.IGNORECASE | re.MULTILINE) for pat in _FLEET_ALLOWED
-    )
+    if "\n" in text:
+        # Only a heredoc / kept-whole multiline block reaches `_fleet_allowed`
+        # with an embedded newline — every other shape is split to one
+        # logical line per fragment before it gets here (`_expand_shell_body`).
+        return _fleet_allowed_block(text)
+    commands = _split_simple_commands(text)
+    if commands is None:
+        return False
+    return all(_simple_command_allowed(c) for c in commands)
 
 
 def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]:
@@ -257,9 +539,15 @@ def _scan_shell_fragment(fragment: str) -> ScanIssue | None:
 
 
 def _shell_fragments_from_task(task_text: str) -> list[str]:
+    # `\n`-only split (never `.splitlines()`) — B4, Loki 6AA36297: this is
+    # the upstream reconstruction `_fleet_allowed_block`'s own `\n`-only
+    # split (below) depends on. `.splitlines()` here would already collapse
+    # a `\r`-carrying or other splitlines()-break-char line before the
+    # heredoc walker ever saw it, silently reproducing the same early-close
+    # bug one layer up even with the walker itself fixed.
     lines = [
         ln
-        for ln in (task_text or "").splitlines()
+        for ln in (task_text or "").split("\n")
         if ln.strip() and ln.strip() not in _NETWORK_DIRECTIVES
     ]
     body = "\n".join(lines).strip()
@@ -284,16 +572,45 @@ def _shell_fragments_from_task(task_text: str) -> list[str]:
     return [f.strip() for f in fragments if f.strip()]
 
 
+def _join_line_continuations(lines: list[str]) -> list[str]:
+    """Join lines ending in an unescaped trailing `\\` into their next line —
+    a literal continuation, so nothing is inserted between the pieces — so a
+    command wrapped across physical lines scans as one logical line."""
+    out: list[str] = []
+    pending = ""
+    for ln in lines:
+        if ln.endswith("\\") and not ln.endswith("\\\\"):
+            pending += ln[:-1]
+            continue
+        joined = pending + ln
+        if joined.strip():
+            out.append(joined)
+        pending = ""
+    if pending.strip():
+        out.append(pending)
+    return out
+
+
 def _expand_shell_body(body: str) -> list[str]:
-    """Split compound shell; keep heredoc / multiline blocks as one unit."""
+    """Split compound shell into chain-split fragments for every logical
+    line (SECURITY: a multi-line body used to fragment to its first line
+    only — gap 312a614188dc — so later lines were never scanned or
+    cwd-tracked). `\\`-continuations are joined first. Heredoc / multiline
+    blocks (a body containing a `<<` marker) are kept as one unit, unchanged
+    from prior behavior."""
     lines = [
-        ln for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")
+        ln
+        for ln in body.split("\n")
+        if ln.strip() and not ln.lstrip(" \t").startswith("#")
     ]
-    if len(lines) == 1:
-        return _CHAIN_SPLIT.split(lines[0])
-    if len(lines) > 1 and not any("<<" in ln for ln in lines):
-        return _CHAIN_SPLIT.split(lines[0])
-    return [body]
+    if not lines:
+        return []
+    if any("<<" in ln for ln in lines):
+        return [body]
+    fragments: list[str] = []
+    for line in _join_line_continuations(lines):
+        fragments.extend(_CHAIN_SPLIT.split(line))
+    return fragments
 
 
 def _issue_payload(issue: ScanIssue, *, where: str) -> dict:
@@ -309,6 +626,132 @@ def _issue_payload(issue: ScanIssue, *, where: str) -> dict:
             "where": where,
         },
     }
+
+
+# Bash's own text model: the only line break is `\n`, and the only blanks
+# are space and tab. Everything downstream (`_expand_shell_body`,
+# `_heredoc_marker_on_line`, `_shell_fragments_from_task`) is now written to
+# that model exactly — but Python's own line/blank primitives
+# (`splitlines()`, `\s`, `.isspace()`, `.strip()`) accept strictly more than
+# that, and three rounds of audit (918CFAD0, 6AA36297, 36CDF4A5) each found a
+# fresh call site where the gap resurfaced. Rather than keep chasing sites,
+# refuse the character class at the door: any of these can never reach a
+# downstream scanner, by construction. Refused: C0 controls other than TAB
+# (`\t`) and LF (`\n`) — i.e. NUL and `\x01`-`\x08`, `\x0b` (VT), `\x0c` (FF),
+# `\x0e`-`\x1f`; DEL (`\x7f`); NEL (`\x85`); and the Unicode line/paragraph
+# separators U+2028 and U+2029. CR (`\r`) is included (bash never treats it
+# as a line break or blank; it is ordinary trailing text on the line) so a
+# CRLF-terminated body is refused here too, rather than silently kept as
+# part of the last word on each line downstream.
+_CONTROL_CHARACTERS = frozenset(
+    map(
+        chr,
+        [
+            *range(0x09),  # C0 controls before TAB: NUL..BS
+            *range(0x0B, 0x20),  # C0 controls after LF through US: VT, FF, SO..US
+            0x7F,  # DEL
+            0x85,  # NEL (NEXT LINE)
+            0x2028,  # LINE SEPARATOR
+            0x2029,  # PARAGRAPH SEPARATOR
+        ],
+    )
+)
+
+
+def _control_character_issue(text: str, *, where: str) -> dict | None:
+    found = None
+    for ch in text:
+        if ch in _CONTROL_CHARACTERS:
+            found = ch
+            break
+    if found is None:
+        return None
+    return {
+        "error": (
+            "[KART-SECURITY] Task text contains a control/line-break "
+            f"character (U+{ord(found):04X}) that Python treats as a "
+            "line break or blank but bash does not — normalise line "
+            "endings to \\n and remove other control characters before "
+            "resubmitting."
+        ),
+        "kart_scan": {
+            "category": "control_characters",
+            "severity": SEV_CRITICAL,
+            "message": f"Disallowed control character U+{ord(found):04X}",
+            "where": where,
+        },
+    }
+
+
+def check_control_characters(
+    task_text: str = "", *, script_body: str = ""
+) -> dict | None:
+    """Refuse any task/script_body text carrying a character Python treats as
+    a line break or blank but bash does not (see `_CONTROL_CHARACTERS`).
+    Structural fix for the whitespace-model class of bug (B4/B5, Loki
+    918CFAD0/6AA36297/36CDF4A5): every downstream `splitlines()`/`\\s`/
+    `.isspace()`/`.strip()` disagreement with bash is unreachable once none
+    of these characters can be present at all."""
+    for where, text in (("task", task_text or ""), ("script_body", script_body or "")):
+        issue = _control_character_issue(text, where=where) if text else None
+        if issue:
+            return issue
+    return None
+
+
+# N1 (Loki F90182A5, pre-existing gap, not a regression): the runner wraps
+# every multi-line fenced block in its own heredoc with a FIXED delimiter
+# (`bash <<'KART_SH'` / `python3 - <<'KART_PY'`, kartikeya execute.py:203,
+# 205), and this scanner has no way to model that wrapper — it is added
+# after the scan, around a block the scanner already judged as a whole. A
+# task-body line that happens to equal one of these delimiters exactly
+# (trailing whitespace aside — bash's own `<<'WORD'` terminator match
+# strips no leading/trailing whitespace from the terminator LINE itself,
+# but the runner's `\n{body}\n{DELIM}` join guarantees the delimiter line
+# is exactly `DELIM` with nothing but a possible trailing newline, so a
+# task line matching `DELIM` plus only trailing whitespace is the one
+# shape that reaches the runner as a bare terminator line) closes the
+# RUNNER's own outer heredoc early, and bash then runs whatever follows in
+# the task body as real commands — even lines the scanner classed as
+# heredoc/data. Same class and impact bound as B4. Fix option (a) from the
+# two named in the packet: refuse the collision outright. Option (b) (a
+# per-task nonce delimiter in the runner, verified absent from the body) is
+# an equally real fix but a larger surface change than this one-line guard.
+_HEREDOC_WRAPPER_DELIMITERS = frozenset({"KART_SH", "KART_PY"})
+
+
+def _wrapper_delimiter_collision(text: str) -> str | None:
+    for line in (text or "").split("\n"):
+        if line.rstrip() in _HEREDOC_WRAPPER_DELIMITERS:
+            return line.rstrip()
+    return None
+
+
+def check_heredoc_wrapper_collision(
+    task_text: str = "", *, script_body: str = ""
+) -> dict | None:
+    """Refuse task/script_body text carrying a line that collides with the
+    runner's own outer heredoc delimiter (see `_HEREDOC_WRAPPER_DELIMITERS`
+    and the N1 note above)."""
+    for where, text in (("task", task_text or ""), ("script_body", script_body or "")):
+        hit = _wrapper_delimiter_collision(text) if text else None
+        if hit:
+            return {
+                "error": (
+                    "[KART-SECURITY] Task text contains a line matching the "
+                    f"runner's own heredoc wrapper delimiter ({hit!r}) — this "
+                    "would close the runner's own wrapper heredoc early and "
+                    "let bash run text this scanner treated as data. Rename "
+                    "or remove the colliding line."
+                ),
+                "kart_scan": {
+                    "category": "heredoc_wrapper_collision",
+                    "severity": SEV_CRITICAL,
+                    "message": f"Line collides with runner delimiter: {hit!r}",
+                    "where": where,
+                },
+            }
+    return None
 
 
 def _hook_tamper_fragment(text: str) -> str | None:
@@ -365,6 +808,14 @@ def check_kart_task(task_text: str = "", *, script_body: str = "") -> dict | Non
     """
     if not kart_scan_enabled():
         return None
+
+    control = check_control_characters(task_text, script_body=script_body)
+    if control:
+        return control
+
+    wrapper = check_heredoc_wrapper_collision(task_text, script_body=script_body)
+    if wrapper:
+        return wrapper
 
     tamper = check_hook_tamper(task_text, script_body=script_body)
     if tamper:
