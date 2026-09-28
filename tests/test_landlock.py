@@ -237,7 +237,7 @@ def require_bwrap() -> None:
 @pytest.mark.skipif(not REQUIRE_SANDBOX, reason="only where CI requires it")
 def test_the_required_sandbox_is_really_there():
     assert landlock.landlock_abi() is not None, "kernel has no Landlock"
-    require_bwrap()
+    assert _bwrap_works(), "bwrap cannot start"
 
 
 @needs_landlock
@@ -515,6 +515,8 @@ def test_a_symlink_in_a_carved_directory_grants_nothing(nested):
 @pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
 def test_carving_is_announced_under_bwrap_too(tmp_path, monkeypatch, caplog):
     # F3: the bwrap path reads its rules from the bwrap argv; it warns too.
+    # Here the read-only bind comes first and the writable parent is mounted
+    # over it, so it is not a read-only mount and is carved around.
     rw = tmp_path / "rw"
     monkeypatch.setenv("KART_LANDLOCK", "auto")
     monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
@@ -530,12 +532,12 @@ def test_carving_is_announced_under_bwrap_too(tmp_path, monkeypatch, caplog):
         "build_bwrap_argv",
         lambda **k: [
             "bwrap",
-            "--bind",
-            str(rw),
-            str(rw),
             "--ro-bind",
             str(rw / ".git" / "hooks"),
             str(rw / ".git" / "hooks"),
+            "--bind",
+            str(rw),
+            str(rw),
         ],
     )
     monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *a, **k: 1 / 0)
@@ -590,6 +592,142 @@ def test_an_unlistable_directory_deeper_in_the_carve_refuses_the_task(
     assert not marker.exists()
 
 
+# ── gap d1adba703d78: git under bwrap + Landlock ─────────────────────────────
+
+
+@pytest.fixture
+def bwrap_repo(tmp_path, box, monkeypatch):
+    """The live policy's shape under real bwrap: a writable repo whose
+    .git/hooks and .git/config are bound read-only."""
+    require_bwrap()
+    rw, _, _ = box
+    repo = rw / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".git" / "hooks").mkdir(exist_ok=True)
+    (repo / "f").write_text("one\n")
+    cfg = Path(os.environ["KART_SANDBOX_CONFIG"])
+    data = json.loads(cfg.read_text())
+    data["bind_read_only"] += [
+        str(repo / ".git" / "hooks"),
+        str(repo / ".git" / "config"),
+    ]
+    cfg.write_text(json.dumps(data))
+    monkeypatch.delenv("WILLOW_KART_NO_BWRAP", raising=False)
+    monkeypatch.setenv("KART_LANDLOCK", "enforce")
+    return repo
+
+
+GIT = "git -c user.name=kart -c user.email=kart@example.invalid"
+
+
+@needs_landlock
+def test_git_commit_works_under_bwrap_with_landlock(bwrap_repo):
+    # The read-only binds are read-only mounts: bwrap already protects them,
+    # so Landlock does not carve their writable parents, and git can create
+    # .git/index.lock.
+    result = sandbox.run_shell(
+        f"cd {bwrap_repo} && {GIT} add f && {GIT} commit -qm one && echo committed",
+        timeout=60,
+    )
+    assert result["sandbox"] == "bwrap", result
+    assert result["landlock"] == f"abi{landlock.landlock_abi()}", result
+    assert result["stdout"].strip() == "committed", result
+
+
+@needs_landlock
+def test_read_only_mounts_stay_read_only_under_bwrap(bwrap_repo):
+    git = bwrap_repo / ".git"
+    (git / "hooks" / "pre-commit").write_text("orig\n")
+    result = sandbox.run_shell(
+        f"(echo EVIL > {git}/hooks/pre-commit) 2>/dev/null || echo hook-denied; "
+        f"(echo x > {git}/hooks/new) 2>/dev/null || echo hook-create-denied; "
+        f"(echo EVIL >> {git}/config) 2>/dev/null || echo config-denied; "
+        f"mv {git}/hooks {git}/h2 2>/dev/null || echo rename-denied; "
+        f"rm -rf {git}/hooks 2>/dev/null; test -d {git}/hooks && echo still-there",
+        timeout=60,
+    )
+    assert result["stdout"].split() == [
+        "hook-denied",
+        "hook-create-denied",
+        "config-denied",
+        "rename-denied",
+        "still-there",
+    ], result
+    assert (git / "hooks" / "pre-commit").read_text() == "orig\n"
+
+
+def test_only_unmounted_read_only_binds_are_carved(tmp_path):
+    present = tmp_path / "present"
+    present.mkdir()
+    argv = [
+        "bwrap",
+        "--bind", "/w", "/w",
+        "--ro-bind", "/src", "/w/repo/.git/hooks",         # a read-only mount
+        "--ro-bind", "/src", "/v/early",                   # shadowed below
+        "--bind", "/v", "/v",
+        "--ro-bind-try", "/no/such/source", "/w/missing",  # never mounted
+        "--ro-bind-try", str(present), "/w/present",       # mounted
+        "--ro-bind", "/src", "/t/x",                       # shadowed by tmpfs
+        "--tmpfs", "/t",
+        "--bind-try", "/no/such/source", "/w/repo",        # skipped: shadows nothing
+        "--", "--ro-bind", "/a", "/b",
+    ]  # fmt: skip
+    assert landlock.ro_binds_needing_carving(argv) == ["/v/early", "/w/missing", "/t/x"]
+
+
+@needs_landlock
+def test_a_shadowed_read_only_bind_is_still_carved(tmp_path):
+    # The launcher checks the live mount flags, not the policy: here the
+    # read-only bind is mounted first and its writable parent over it, so it
+    # is not a read-only mount, and carving is the only thing protecting it.
+    require_bwrap()
+    repo = tmp_path / "repo"
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "pre-commit").write_text("orig\n")
+    spec = landlock.landlock_spec([str(repo)], ["/usr", "/etc", str(hooks)], bwrap=True)
+    probe = f"(echo EVIL > {hooks}/pre-commit) 2>/dev/null || echo denied"
+    argv = [
+        "bwrap", "--unshare-pid", "--dev", "/dev", "--proc", "/proc",
+        "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
+        "--symlink", "usr/bin", "/bin",
+        "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+        "--ro-bind", str(hooks), str(hooks),
+        "--bind", str(repo), str(repo),
+        "--", *landlock.wrap_argv(["/bin/sh", "-c", probe], spec),
+    ]  # fmt: skip
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+    assert out.stdout.strip() == "denied", out
+    assert (hooks / "pre-commit").read_text() == "orig\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
+def test_read_only_mounts_under_bwrap_are_not_announced_as_carved(
+    tmp_path, monkeypatch, caplog
+):
+    rw = tmp_path / "rw"
+    monkeypatch.setenv("KART_LANDLOCK", "auto")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    monkeypatch.setattr(landlock, "_warned_carving", set())
+    monkeypatch.setattr(landlock, "landlock_abi", lambda: 7)
+    monkeypatch.setattr(sandbox, "use_bwrap", lambda: True)
+    monkeypatch.setattr(sandbox, "_bwrap_supports_json_status", lambda: False)
+    monkeypatch.setattr(
+        sandbox.cgroup_setup, "cgroup_parent_state", lambda: (None, None)
+    )
+    hooks = str(rw / ".git" / "hooks")
+    monkeypatch.setattr(
+        sandbox,
+        "build_bwrap_argv",
+        lambda **k: ["bwrap", "--bind", str(rw), str(rw), "--ro-bind", hooks, hooks],
+    )
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *a, **k: 1 / 0)
+    with caplog.at_level(logging.WARNING, logger=landlock._log.name):
+        sandbox.run_shell("true", timeout=20)
+    assert not [r for r in caplog.records if "carved" in r.getMessage()]
+
+
 @needs_landlock
 def test_a_directory_swapped_in_mid_walk_refuses_the_task(tmp_path):
     # F8: between classifying an entry (fstat of its O_PATH fd) and reopening
@@ -641,3 +779,106 @@ def test_a_bind_root_swapped_before_carving_refuses_the_task(tmp_path):
     assert out.returncode == landlock.LANDLOCK_FAILED_EXIT, out
     assert "changed while carving" in out.stderr, out
     assert (rw / "f").read_text() == "orig\n"  # the moved read-only dir
+
+
+# ── Loki on #90 at 2cc08b1 ───────────────────────────────────────────────────
+
+
+@needs_landlock
+def test_a_missing_read_only_child_cannot_be_created(tmp_path):
+    # A read-only path that does not exist is on no read-only mount, so the
+    # launcher still carves its writable parent: the task cannot create it
+    # (and plant whatever the policy meant to keep read-only). Driven at the
+    # launcher, since the host drops missing binds before it gets there.
+    rw = tmp_path / "rw"
+    rw.mkdir()
+    spec = landlock.landlock_spec([str(rw)], ["/usr", str(rw / "missing")], bwrap=False)
+    probe = (
+        f"mkdir {rw}/missing 2>/dev/null || echo mkdir-denied; "
+        f"(echo x > {rw}/missing) 2>/dev/null || echo create-denied"
+    )
+    argv = landlock.wrap_argv(["/bin/sh", "-c", probe], spec)
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    assert out.stdout.split() == ["mkdir-denied", "create-denied"], out
+    assert not (rw / "missing").exists()
+
+
+@needs_landlock
+def test_a_read_only_path_that_cannot_be_checked_refuses_the_task(tmp_path):
+    # An error reading a read-only path's mount flags must refuse the task
+    # (126, landlock_failed), not crash the launcher with a traceback.
+    rw = tmp_path / "rw"
+    (rw / "locked").mkdir(parents=True)
+    hook = "os.fstatvfs(fd).f_flag"
+    assert hook in landlock.LAUNCHER
+    broken = landlock.LAUNCHER.replace(
+        hook, "(_ for _ in ()).throw(OSError(5, 'injected EIO'))", 1
+    )
+    spec = landlock.landlock_spec([str(rw)], ["/usr", str(rw / "locked")], bwrap=False)
+    argv = landlock.wrap_argv(["/bin/true"], spec)
+    argv[argv.index(landlock.LAUNCHER)] = broken
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    assert out.returncode == landlock.LANDLOCK_FAILED_EXIT, out
+    assert landlock.LANDLOCK_FAILED in out.stderr and "injected EIO" in out.stderr
+
+
+@needs_landlock
+def test_a_read_only_path_swapped_for_a_link_is_not_trusted(tmp_path):
+    # Between resolving a read-only path and checking its mount flags, a
+    # concurrent task swaps it for a symlink to a read-only mount (/usr).
+    # Followed, the link would pass as a read-only mount, and the writable
+    # parent would go uncarved. Opened O_NOFOLLOW, it is carved around.
+    require_bwrap()
+    repo = tmp_path / "repo"
+    hooks = repo / "hooks"
+    hooks.mkdir(parents=True)
+    hook = "        fd = os.open(p, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)"
+    assert hook in landlock.LAUNCHER
+    race = (
+        f"        if p == {str(hooks)!r}:\n"
+        f"            os.rename(p, p + '.old')\n"
+        f"            os.symlink('/usr', p)\n"
+    )
+    raced = landlock.LAUNCHER.replace(hook, race + hook, 1)
+    spec = landlock.landlock_spec([str(repo)], ["/usr", "/etc", str(hooks)], bwrap=True)
+    probe = f"(echo x > {repo}/new) 2>/dev/null || echo create-denied"
+    inner = landlock.wrap_argv(["/bin/sh", "-c", probe], spec)
+    inner[inner.index(landlock.LAUNCHER)] = raced
+    argv = [
+        "bwrap", "--unshare-pid", "--dev", "/dev", "--proc", "/proc",
+        "--ro-bind", "/usr", "/usr", "--ro-bind", "/etc", "/etc",
+        "--symlink", "usr/bin", "/bin",
+        "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+        "--bind", str(repo), str(repo),
+        "--", *inner,
+    ]  # fmt: skip
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+    assert out.stdout.strip() == "create-denied", out
+    assert not (repo / "new").exists()
+
+
+@needs_landlock
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0, reason="root can search a mode-000 dir"
+)
+def test_a_read_only_path_that_cannot_be_opened_refuses_the_task(tmp_path):
+    # An error other than "missing" opening a read-only path (here EACCES:
+    # its parent is mode 000) must refuse the task, not skip the path, which
+    # would leave it neither carved around nor ruled.
+    rw = tmp_path / "rw"
+    shut = tmp_path / "shut"
+    (shut / "locked").mkdir(parents=True)
+    rw.mkdir()
+    spec = landlock.landlock_spec(
+        [str(rw)], ["/usr", str(shut / "locked")], bwrap=False
+    )
+    argv = landlock.wrap_argv(["/bin/true"], spec)
+    shut.chmod(0o000)
+    try:
+        out = subprocess.run(
+            argv, capture_output=True, text=True, timeout=20, check=False
+        )
+    finally:
+        shut.chmod(0o755)
+    assert out.returncode == landlock.LANDLOCK_FAILED_EXIT, out
+    assert landlock.LANDLOCK_FAILED in out.stderr, out

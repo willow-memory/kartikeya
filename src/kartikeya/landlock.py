@@ -218,6 +218,44 @@ def binds_from_bwrap_argv(argv: list[str]) -> tuple[list[str], list[str]]:
     return rw, ro
 
 
+def ro_binds_needing_carving(argv: list[str]) -> list[str]:
+    """The read-only binds in a bwrap argv that will *not* be read-only
+    mounts, so the launcher still carves around them: one shadowed by a later
+    bind or tmpfs on the same path or an ancestor, or a ``--ro-bind-try``
+    whose source is missing. The launcher decides for itself from the live
+    mount flags; this host-side view only feeds the carving warning."""
+    mounts: list[tuple[str, bool, bool]] = []  # (dest, read_only, mounted)
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            break
+        if (tok in _BWRAP_RW_BINDS or tok in _BWRAP_RO_BINDS) and i + 2 < len(argv):
+            mounted = not tok.endswith("-try") or os.path.exists(argv[i + 1])
+            mounts.append((argv[i + 2], tok in _BWRAP_RO_BINDS, mounted))
+            i += 3
+        elif tok == "--tmpfs" and i + 1 < len(argv):
+            mounts.append((argv[i + 1], False, True))
+            i += 2
+        else:
+            i += 1
+
+    def covers(outer: str, inner: str) -> bool:
+        return inner == outer or inner.startswith(outer.rstrip("/") + "/")
+
+    out = []
+    for n, (dest, read_only, mounted) in enumerate(mounts):
+        if not read_only:
+            continue
+        shadowed = any(
+            later_mounted and covers(later, dest)
+            for later, _ro, later_mounted in mounts[n + 1 :]
+        )
+        if not mounted or shadowed:
+            out.append(dest)
+    return out
+
+
 # The launcher runs as `python3 -c LAUNCHER <spec> -- <argv...>` inside the
 # sandbox. It must stand alone: kartikeya itself may not be importable there.
 LAUNCHER = r"""
@@ -314,13 +352,34 @@ def ident(st):
 
 ro_paths = [norm(p) for p in spec["ro"]]
 ro_ids = set()
+# Read-only paths that sit on a read-only mount (under bwrap: every
+# --ro-bind). The mount already refuses every write, and a mount point cannot
+# be renamed or removed (EBUSY), so their writable parents need no carving,
+# and git can create .git/index.lock beside a read-only .git/hooks. A path
+# that is missing, or whose read-only bind was shadowed by a later mount, is
+# not on a read-only mount and is carved around as before.
+mounted_ro = set()
 for p in ro_paths:
+    # O_NOFOLLOW: p was resolved above, so a link here means it was swapped
+    # since. Opened without following, fstatvfs reports the filesystem the
+    # link sits on, not where it points; the S_ISLNK check says the same
+    # thing outright. Either way a link is carved around, never trusted.
     try:
-        ro_ids.add(ident(os.stat(p)))
+        fd = os.open(p, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
     except FileNotFoundError:
-        pass
+        continue
+    except OSError as e:
+        fail("open %s: %s" % (p, e))
+    try:
+        st = os.fstat(fd)
+        ro_ids.add(ident(st))
+        if not stat.S_ISLNK(st.st_mode) and os.fstatvfs(fd).f_flag & os.ST_RDONLY:
+            mounted_ro.add(p)
     except OSError as e:
         fail("stat %s: %s" % (p, e))
+    finally:
+        os.close(fd)
+to_carve = [p for p in ro_paths if p not in mounted_ro]
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -372,7 +431,7 @@ def carve(dfd, label, on_way):
             os.close(cfd)
 
 for path in (norm(p) for p in spec["rw"]):
-    nested = [d for d in ro_paths if under(d, path)]
+    nested = [d for d in to_carve if under(d, path)]
     if not nested:
         add_rule(path, RW)
         continue
