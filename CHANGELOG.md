@@ -31,6 +31,15 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.4.2](https://github.com/willow-memory/kartikeya/compare/v0.4.1...v0.4.2) (2026-09-28)
+
+
+### Fixed
+
+* **sandbox:** keep returncode absent through both result normalizers ([65e30a2](https://github.com/willow-memory/kartikeya/commit/65e30a2c9564e58f32ab42280a652b552c2977ea))
+* **sandbox:** remove, kill and sweep task cgroup leaves; refuse unusable parents ([b6f4b5e](https://github.com/willow-memory/kartikeya/commit/b6f4b5e702245840e3189be9266170df443ef6e0))
+* **sandbox:** rtk rewrite falls back to the original command on bad output ([caf76d2](https://github.com/willow-memory/kartikeya/commit/caf76d22959e6cfb73ad5721a337f8654c0ee1c9))
+
 ## [0.4.1](https://github.com/willow-memory/kartikeya/compare/v0.4.0...v0.4.1) (2026-09-28)
 
 
