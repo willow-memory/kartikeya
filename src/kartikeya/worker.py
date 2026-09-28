@@ -7,7 +7,7 @@ becomes optional callbacks, and the Grove governance gate / hot-reload are
 dropped. Two lanes:
 
   fast  — up to N concurrent slots (default $KART_FAST_WORKERS or 3).
-  batch — one task at a time.
+  batch — up to N concurrent slots (default $KART_BATCH_WORKERS or 1).
 
 `main()` backs the `kartikeya` / `kart` console scripts: it constructs the
 reference SqliteTaskQueue and drains it, so a zero-infra install runs tasks.
@@ -35,7 +35,7 @@ from .execute import (
     trim_task_result,
 )
 from .home import willow_home
-from .lanes import KART_LANE_BATCH, KART_LANE_FAST, fast_worker_slots, normalize_lane
+from .lanes import KART_LANE_BATCH, KART_LANE_FAST, lane_worker_slots, normalize_lane
 from .queue import SqliteTaskQueue, TaskQueue, TaskRow
 
 logger = logging.getLogger("kartikeya.worker")
@@ -131,11 +131,13 @@ def run_worker(
 ) -> None:
     """Drain `queue` until stopped (or, with once=True, until it is empty).
 
-    lane: 'fast' runs up to `slots` tasks concurrently and caps each task at
-    `KART_FAST_TIMEOUT` (300s); 'batch' runs one at a time under the longer
-    `KART_DAEMON_TIMEOUT` (1800s). `once=True` claims and processes everything
-    currently pending, waits for in-flight work, and returns — for tests and
-    cron-style one-shot drains (which use the short 'poll' ceiling instead).
+    lane: 'fast' caps each task at `KART_FAST_TIMEOUT` (300s); 'batch' uses
+    the longer `KART_DAEMON_TIMEOUT` (1800s). Either lane runs up to `slots`
+    tasks concurrently; left None, `slots` defaults per lane to
+    `KART_FAST_WORKERS` (3) or `KART_BATCH_WORKERS` (1). `once=True` claims
+    and processes everything currently pending, waits for in-flight work, and
+    returns — for tests and cron-style one-shot drains (which use the short
+    'poll' ceiling instead).
 
     `network_authorizer` is an optional host-supplied gate consulted just before
     a network-requesting task's sandbox launches (see execute_task_row). Left
@@ -145,11 +147,7 @@ def run_worker(
     on_heartbeat = on_heartbeat or _noop
     on_run_event = on_run_event or _noop
     context = "poll" if once else "daemon"
-    max_workers = (
-        1
-        if lane == KART_LANE_BATCH
-        else (slots if slots is not None else fast_worker_slots())
-    )
+    max_workers = max(1, slots) if slots is not None else lane_worker_slots(lane)
 
     in_flight: set[str] = set()
     lock = threading.Lock()
@@ -265,7 +263,13 @@ def main(argv: list[str] | None = None) -> int:
     wp.add_argument(
         "--lane", default=KART_LANE_FAST, choices=[KART_LANE_FAST, KART_LANE_BATCH]
     )
-    wp.add_argument("--slots", type=int, default=None)
+    wp.add_argument(
+        "--slots",
+        type=int,
+        default=None,
+        help="concurrent tasks (default: $KART_FAST_WORKERS=3 for fast, "
+        "$KART_BATCH_WORKERS=1 for batch)",
+    )
     wp.add_argument("--interval", type=float, default=5.0)
     wp.add_argument("--once", action="store_true", help="drain the queue and exit")
     wp.add_argument(

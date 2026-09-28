@@ -4,6 +4,11 @@
   ``kart-worker.service`` (``KART_WORKER_LANE=fast``).
 * ``batch`` — long GPU/CPU work; ``kart-worker-batch.service``
   (``KART_WORKER_LANE=batch``) runs concurrently with fast workers.
+
+Each worker process runs up to ``lane_worker_slots(lane)`` tasks at once:
+``KART_FAST_WORKERS`` (default 3) or ``KART_BATCH_WORKERS`` (default 1).
+Several worker processes may also drain the same lane; that is the queue
+backend's concern (``TaskQueue.claim_pending`` must be atomic across workers).
 """
 
 from __future__ import annotations
@@ -30,7 +35,8 @@ def worker_mode() -> str:
     """Which lane(s) this kart-worker process claims.
 
     ``fast`` (default) — interactive shell/gh/git; may run N concurrent tasks.
-    ``batch`` — one long job at a time (embeds, ingest, GPU).
+    ``batch`` — long jobs (embeds, ingest, GPU); ``KART_BATCH_WORKERS`` at a
+    time, default 1.
     ``all`` — legacy single-threaded fast-then-batch (deprecated).
     """
     raw = (os.environ.get("KART_WORKER_LANE") or KART_WORKER_MODE_FAST).strip().lower()
@@ -41,6 +47,20 @@ def worker_mode() -> str:
 
 def fast_worker_slots() -> int:
     return max(1, int(os.environ.get("KART_FAST_WORKERS", "3")))
+
+
+def batch_worker_slots() -> int:
+    """Concurrent batch tasks per worker process. Defaults to 1: batch work is
+    long and heavy (embeds, ingest, GPU), so running more than one at a time is
+    an operator decision about memory and GPU headroom, not a default."""
+    return max(1, int(os.environ.get("KART_BATCH_WORKERS", "1")))
+
+
+def lane_worker_slots(lane: str | None) -> int:
+    """Default concurrent-task slots for one worker process on ``lane``."""
+    if normalize_lane(lane) == KART_LANE_BATCH:
+        return batch_worker_slots()
+    return fast_worker_slots()
 
 
 def reaper_stale_seconds() -> int:
