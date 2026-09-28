@@ -174,23 +174,80 @@ def _dead_pid() -> int:
     return proc.pid
 
 
+def _ns() -> int:
+    return os.stat("/proc/self/ns/pid").st_ino
+
+
+def _leaf(parent, ns, pid):
+    return parent / f"kart-{ns}-{pid}-{uuid.uuid4().hex}"
+
+
 def test_sweep_removes_dead_owners_leaves_and_spares_live_ones(parent, spies):
     killed, _ = spies
-    dead = parent / f"kart-{_dead_pid()}-{uuid.uuid4().hex}"
-    legacy_dead = parent / f"kart-{_dead_pid()}-12345"  # pid-ms name from <= 0.3.x
-    live = parent / f"kart-{os.getpid()}-{uuid.uuid4().hex}"
+    ns = _ns()
+    dead = _leaf(parent, ns, _dead_pid())
+    live = _leaf(parent, ns, os.getpid())
     ownerless_empty = parent / f"kart-{uuid.uuid4().hex}"
     ownerless_busy = parent / f"kart-{uuid.uuid4().hex}"
     other = parent / "not-ours"
-    for d in (dead, legacy_dead, live, ownerless_empty, ownerless_busy, other):
+    for d in (dead, live, ownerless_empty, ownerless_busy, other):
         d.mkdir()
     (ownerless_busy / ".busy").write_text("")  # stands in for a populated cgroup
 
     swept = sandbox.sweep_stale_cgroup_leaves()
 
-    assert sorted(swept) == sorted(str(d) for d in (dead, legacy_dead, ownerless_empty))
-    assert sorted(killed) == sorted(str(d) for d in (dead, legacy_dead))
+    assert sorted(swept) == sorted(str(d) for d in (dead, ownerless_empty))
+    assert killed == [str(dead)]
     assert _leaves(parent) == sorted([live.name, ownerless_busy.name, other.name])
+
+
+def test_sweep_never_kills_another_pid_namespaces_leaf(parent, spies):
+    # A worker in a container sharing this cgroup parent: its pid means
+    # nothing in our namespace (here it reads as dead), so its populated
+    # leaf must be left alone, not killed. An empty one may still go.
+    killed, _ = spies
+    foreign_busy = _leaf(parent, _ns() + 1, _dead_pid())
+    foreign_empty = _leaf(parent, _ns() + 1, _dead_pid())
+    for d in (foreign_busy, foreign_empty):
+        d.mkdir()
+    (foreign_busy / ".busy").write_text("")
+
+    swept = sandbox.sweep_stale_cgroup_leaves()
+
+    assert killed == []
+    assert swept == [str(foreign_empty)]
+    assert _leaves(parent) == [foreign_busy.name]
+
+
+def test_sweep_does_not_kill_leaves_without_a_namespace(parent, spies):
+    # kart-<pid>-<uuid> (<= 0.4.x) and kart-<pid>-<ms> (<= 0.3.x) carry no
+    # namespace, so their owner cannot be judged: rmdir only, never kill.
+    killed, _ = spies
+    legacy_busy = parent / f"kart-{_dead_pid()}-{uuid.uuid4().hex}"
+    legacy_empty = parent / f"kart-{_dead_pid()}-12345"
+    for d in (legacy_busy, legacy_empty):
+        d.mkdir()
+    (legacy_busy / ".busy").write_text("")
+
+    swept = sandbox.sweep_stale_cgroup_leaves()
+
+    assert killed == []
+    assert swept == [str(legacy_empty)]
+    assert _leaves(parent) == [legacy_busy.name]
+
+
+def test_new_leaves_carry_this_pid_namespace(parent):
+    leaf = sandbox._try_make_cgroup({"mem": 4096, "pids": 8})
+    name = os.path.basename(leaf)
+    assert name.startswith(f"kart-{_ns()}-{os.getpid()}-")
+    assert sandbox._LEAF_OWNER_RE.match(name)
+
+
+def test_leaf_name_without_proc_namespace_has_no_namespace(monkeypatch):
+    monkeypatch.setattr(sandbox, "_pid_namespace", lambda: None)
+    name = sandbox._leaf_name()
+    assert name.startswith(f"kart-{os.getpid()}-")
+    assert not sandbox._LEAF_OWNER_RE.match(name)
 
 
 def test_sweep_without_a_parent_does_nothing(monkeypatch):
