@@ -378,12 +378,12 @@ def test_resource_limits_env_overrides(monkeypatch):
 
 
 def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatch):
-    # No delegated parent → in-sandbox prlimit/ulimit wrap, not host preexec.
+    # No delegated parent → in-sandbox prlimit/ulimit wrap, no host-side prefix.
     monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
     monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
-    preexec, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024**2, "pids": 64})
+    prefix, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024**2, "pids": 64})
     assert mode == "rlimit"
-    assert preexec is None and cleanup is None
+    assert prefix is None and cleanup is None
     wrapped = sandbox.wrap_task_with_rlimits(
         "echo hi", {"mem": 256 * 1024**2, "pids": 64}
     )
@@ -394,9 +394,54 @@ def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatc
 
 def test_limits_context_uses_cgroup_when_parent_delegated(monkeypatch):
     monkeypatch.setattr(sandbox, "_try_make_cgroup", lambda limits: "/fake/kart-leaf")
-    preexec, cleanup, mode = sandbox._limits_context({"mem": 4096, "pids": 8})
+    prefix, cleanup, mode = sandbox._limits_context({"mem": 4096, "pids": 8})
     assert mode == "cgroup"
-    assert callable(preexec) and callable(cleanup)
+    assert prefix[:2] == ["/bin/sh", "-c"]
+    assert prefix[-1] == os.path.join("/fake/kart-leaf", "cgroup.procs")
+    assert callable(cleanup)
+
+
+def test_run_shell_passes_no_preexec_fn(monkeypatch):
+    # preexec_fn runs Python between fork and exec, unsafe once the worker's
+    # thread pool is up; the cgroup join must go through the exec wrapper.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setattr(sandbox, "_try_make_cgroup", lambda limits: "/fake/kart-leaf")
+    seen = {}
+    real_popen = sandbox.subprocess.Popen
+
+    def spy(argv, **kw):
+        seen["argv"], seen["preexec_fn"] = argv, kw.get("preexec_fn")
+        return real_popen(["true"], **kw)
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", spy)
+    sandbox.run_shell("echo hi", timeout=10)
+    assert seen["preexec_fn"] is None
+    assert seen["argv"][:2] == ["/bin/sh", "-c"]
+
+
+@pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="POSIX sh")
+def test_cgroup_join_wrapper_writes_own_pid_then_execs(tmp_path):
+    # The wrapper must write the pid that then becomes the exec'd command
+    # (so bwrap itself starts in the cgroup), and must not abort the task
+    # when the write fails.
+    import subprocess
+
+    procs = tmp_path / "cgroup.procs"
+    out = subprocess.run(
+        ["/bin/sh", "-c", sandbox._CGROUP_JOIN_SH, str(procs), "sh", "-c", "echo $$"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert procs.read_text().strip() == out.stdout.strip()
+    missing = tmp_path / "no-such-dir" / "cgroup.procs"
+    out = subprocess.run(
+        ["/bin/sh", "-c", sandbox._CGROUP_JOIN_SH, str(missing), "echo", "ran"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout == "ran\n" and out.stderr == ""
 
 
 _LARGE_VA_CMD = (
@@ -645,6 +690,17 @@ def _pid_alive(pid: int) -> bool:
             return f.read().split(") ", 1)[1][0] != "Z"
     except OSError:
         return False
+
+
+def test_timeout_returns_timeout_result(monkeypatch):
+    # Runs on every platform, Windows included: the timeout path must yield a
+    # "timeout" row, never an exception from the kill (os.killpg is POSIX-only).
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    started = time.time()
+    result = sandbox.run_shell("sleep 60", timeout=1)
+    assert result["error"] == "timeout", result
+    assert time.time() - started < 15
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")

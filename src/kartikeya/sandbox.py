@@ -1314,22 +1314,26 @@ def _try_make_cgroup(limits: dict) -> str | None:
         return None
 
 
-def _limits_context(limits: dict):
-    """Return (preexec_fn, cleanup_fn, mode).
+# Joins the cgroup from inside the child, then execs the real argv in the same
+# process. $0 carries the cgroup.procs path, "$@" the argv. A failed write is
+# silent and non-fatal, matching the old preexec hook: the task runs unlimited.
+_CGROUP_JOIN_SH = '{ echo $$ >"$0"; } 2>/dev/null; exec "$@"'
 
-    cgroup: preexec joins the bwrap child to a leaf cgroup (host-side).
-    rlimit: no preexec — limits are applied inside the sandbox via
+
+def _limits_context(limits: dict):
+    """Return (argv_prefix, cleanup_fn, mode).
+
+    cgroup: argv_prefix is an exec wrapper that moves the child into a leaf
+    cgroup before exec'ing bwrap (host-side), so bwrap and everything under
+    it start limited. It replaces a preexec_fn, which is unsafe once the
+    worker's thread pool is running (a lock held at fork can deadlock the
+    child).
+    rlimit: no prefix — limits are applied inside the sandbox via
     wrap_task_with_rlimits() so bwrap setup is not capped.
     """
     leaf = _try_make_cgroup(limits)
     if leaf:
-
-        def _preexec_cgroup() -> None:
-            try:
-                with open(os.path.join(leaf, "cgroup.procs"), "w") as f:
-                    f.write(str(os.getpid()))
-            except OSError:
-                pass
+        prefix = ["/bin/sh", "-c", _CGROUP_JOIN_SH, os.path.join(leaf, "cgroup.procs")]
 
         def _cleanup_cgroup() -> None:
             try:
@@ -1337,7 +1341,7 @@ def _limits_context(limits: dict):
             except OSError:
                 pass
 
-        return _preexec_cgroup, _cleanup_cgroup, "cgroup"
+        return prefix, _cleanup_cgroup, "cgroup"
 
     return None, None, "rlimit"
 
@@ -1391,10 +1395,10 @@ def run_shell(
     rtk_rewritten = cmd != original_cmd
 
     limits = _resource_limits()
-    preexec_fn = cleanup = None
+    limits_prefix = cleanup = None
     resource_mode = "none"
     if limits:
-        preexec_fn, cleanup, resource_mode = _limits_context(limits)
+        limits_prefix, cleanup, resource_mode = _limits_context(limits)
         if resource_mode == "rlimit":
             cmd = wrap_task_with_rlimits(cmd, limits)
 
@@ -1421,6 +1425,8 @@ def run_shell(
         sandbox = "bwrap"
     else:
         full = argv
+    if limits_prefix:
+        full = limits_prefix + full
 
     def _setup_state() -> str | None:
         if status_file is None:
@@ -1448,7 +1454,6 @@ def run_shell(
             env=run_env,
             cwd=cwd,
             pass_fds=pass_fds,
-            preexec_fn=preexec_fn,  # noqa: PLW1509 — same cgroup-join hook subprocess.run already passed; it only writes cgroup.procs
             start_new_session=True,
         ) as proc:
             try:
