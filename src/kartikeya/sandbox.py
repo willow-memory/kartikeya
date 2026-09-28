@@ -1656,7 +1656,12 @@ def run_shell(
             inner = [bash, "-c", cmd]
             if landlock_abi:
                 ll_rw, ll_ro = landlock.binds_from_bwrap_argv(prefix)
-                landlock.warn_carving_once(landlock.carved_dirs(ll_rw, ll_ro))
+                # Only binds bwrap will not mount read-only are carved.
+                landlock.warn_carving_once(
+                    landlock.carved_dirs(
+                        ll_rw, landlock.ro_binds_needing_carving(prefix)
+                    )
+                )
                 inner = landlock.wrap_argv(
                     inner, landlock.landlock_spec(ll_rw, ll_ro, bwrap=True)
                 )

@@ -92,7 +92,7 @@ worker unit's `Environment=`, then restart it.
 **Landlock (second filesystem lock):** `KART_LANDLOCK` puts a kernel Landlock
 ruleset behind bwrap, allowing only the paths bwrap mounts: read-only binds
 get read and execute, and read-write binds get full rights except where one
-holds a read-only path (see carving below). In plain mode
+has to be carved around a read-only path (see below). In plain mode
 (`WILLOW_KART_NO_BWRAP=1`) it is the only filesystem confinement, and the host's
 `/tmp` is not granted, so give tasks a writable bind for scratch.
 
@@ -108,16 +108,24 @@ records the ABI version that confined it. Try `auto` on one worker before
 turning it on everywhere.
 
 Landlock can only *add* rights, so a read-only path inside a read-write bind
-(a repo's `.git/hooks` inside the writable repo, say) is protected by
-**carving**: the read-write parent gets read-only rights at its own level, and
-each of its other entries gets read-write. The cost is that nothing can be
-created or removed *directly in* a carved directory. With `.git/hooks`
-read-only that includes `.git/` itself, so `git commit` cannot write
-`.git/index.lock`. **A policy that nests read-only paths inside writable repos
-is therefore not yet compatible with `KART_LANDLOCK` for git work.** The worker
-logs a warning naming the carved directories the first time a policy carves
-any, so the cost shows up before a task fails on it. Paths are resolved through
-symlinks before carving, so a bind named through a link is still carved.
+(a repo's `.git/hooks` inside the writable repo, say) needs protecting from the
+parent's read-write rule. **Under bwrap it already is**: every `--ro-bind` is a
+read-only mount, which refuses writes whatever Landlock allows and cannot be
+renamed or removed. The launcher checks the live mount flags, and leaves the
+parent fully writable for such paths, so git works: it can create
+`.git/index.lock` beside a read-only `.git/hooks` and `.git/config`.
+
+A read-only path that is *not* on a read-only mount (every one in plain mode,
+or under bwrap one shadowed by a later bind or a `--ro-bind-try` whose source
+is missing) is protected by **carving**: the read-write parent gets read-only
+rights at its own level, and each of its other entries gets read-write. The
+cost is that nothing can be created or removed *directly in* a carved
+directory. **In plain mode, a policy that nests read-only paths inside
+writable repos is therefore not compatible with `KART_LANDLOCK` for git
+work**: `git commit` cannot write `.git/index.lock`. The worker logs a warning
+naming the carved directories the first time a policy carves any. Paths are
+resolved through symlinks, and carving walks the tree by file descriptor
+without following links.
 
 _Coming with stage 2 — once the worker core lands, this section documents
 `kartikeya worker` end to end (submit → worker runs → poll)._
