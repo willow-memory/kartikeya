@@ -36,7 +36,6 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **queue:** close every SQLite connection when its operation ends ([9a5c1c0](https://github.com/willow-memory/kartikeya/commit/9a5c1c0f62e9b15845305438149ab544989b9238))
 * **queue:** close every SQLite connection when its operation ends ([bda2b55](https://github.com/willow-memory/kartikeya/commit/bda2b55bf8eb5a30947c7797b73f09330075749e))
 
 ## [0.4.2](https://github.com/willow-memory/kartikeya/compare/v0.4.1...v0.4.2) (2026-09-28)
