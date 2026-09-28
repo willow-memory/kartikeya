@@ -237,7 +237,7 @@ def require_bwrap() -> None:
 @pytest.mark.skipif(not REQUIRE_SANDBOX, reason="only where CI requires it")
 def test_the_required_sandbox_is_really_there():
     assert landlock.landlock_abi() is not None, "kernel has no Landlock"
-    require_bwrap()
+    assert _bwrap_works(), "bwrap cannot start"
 
 
 @needs_landlock
@@ -855,3 +855,30 @@ def test_a_read_only_path_swapped_for_a_link_is_not_trusted(tmp_path):
     out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
     assert out.stdout.strip() == "create-denied", out
     assert not (repo / "new").exists()
+
+
+@needs_landlock
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0, reason="root can search a mode-000 dir"
+)
+def test_a_read_only_path_that_cannot_be_opened_refuses_the_task(tmp_path):
+    # An error other than "missing" opening a read-only path (here EACCES:
+    # its parent is mode 000) must refuse the task, not skip the path, which
+    # would leave it neither carved around nor ruled.
+    rw = tmp_path / "rw"
+    shut = tmp_path / "shut"
+    (shut / "locked").mkdir(parents=True)
+    rw.mkdir()
+    spec = landlock.landlock_spec(
+        [str(rw)], ["/usr", str(shut / "locked")], bwrap=False
+    )
+    argv = landlock.wrap_argv(["/bin/true"], spec)
+    shut.chmod(0o000)
+    try:
+        out = subprocess.run(
+            argv, capture_output=True, text=True, timeout=20, check=False
+        )
+    finally:
+        shut.chmod(0o755)
+    assert out.returncode == landlock.LANDLOCK_FAILED_EXIT, out
+    assert landlock.LANDLOCK_FAILED in out.stderr, out
