@@ -360,16 +360,23 @@ ro_ids = set()
 # not on a read-only mount and is carved around as before.
 mounted_ro = set()
 for p in ro_paths:
+    # O_NOFOLLOW: p was resolved above, so a link here means it was swapped
+    # since. Opened without following, fstatvfs reports the filesystem the
+    # link sits on, not where it points; the S_ISLNK check says the same
+    # thing outright. Either way a link is carved around, never trusted.
     try:
-        fd = os.open(p, os.O_PATH | os.O_CLOEXEC)
+        fd = os.open(p, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
     except FileNotFoundError:
         continue
     except OSError as e:
         fail("open %s: %s" % (p, e))
     try:
-        ro_ids.add(ident(os.fstat(fd)))
-        if os.fstatvfs(fd).f_flag & os.ST_RDONLY:
+        st = os.fstat(fd)
+        ro_ids.add(ident(st))
+        if not stat.S_ISLNK(st.st_mode) and os.fstatvfs(fd).f_flag & os.ST_RDONLY:
             mounted_ro.add(p)
+    except OSError as e:
+        fail("stat %s: %s" % (p, e))
     finally:
         os.close(fd)
 to_carve = [p for p in ro_paths if p not in mounted_ro]
@@ -450,6 +457,10 @@ for path in (norm(p) for p in spec["rw"]):
     except OSError as e:
         fail("cannot carve %s: %s" % (path, e))
     try:
+        # The bind root was stat'd into on_way by name; the fd must be the
+        # same directory, or the root was swapped in between.
+        if ident(os.fstat(dfd)) not in on_way:
+            fail("%s changed while carving" % path)
         carve(dfd, path, on_way)
     finally:
         os.close(dfd)

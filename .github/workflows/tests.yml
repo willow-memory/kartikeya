@@ -39,7 +39,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        # Ubuntu 24.04 confines unprivileged user namespaces through AppArmor,
+        # which stops bwrap from starting; lift that on the runner so the
+        # sandbox tests run instead of skipping (KART_REQUIRE_SANDBOX below).
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Install
         # pyyaml is for tests/test_release_wiring.py, which reads the release
@@ -49,7 +54,11 @@ jobs:
         run: pip install -e "." pytest pyyaml
 
       - name: Run tests
-        run: python -m pytest tests/ -q
+        # -rs lists every skip in the log. KART_REQUIRE_SANDBOX turns a
+        # missing Landlock or an unstartable bwrap into a failure, not a skip.
+        env:
+          KART_REQUIRE_SANDBOX: "1"
+        run: python -m pytest tests/ -q -rs
 
   test-windows:
     # The floor and the ceiling of the same classifier range, on Windows. The

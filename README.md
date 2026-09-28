@@ -109,11 +109,20 @@ turning it on everywhere.
 
 Landlock can only *add* rights, so a read-only path inside a read-write bind
 (a repo's `.git/hooks` inside the writable repo, say) needs protecting from the
-parent's read-write rule. **Under bwrap it already is**: every `--ro-bind` is a
-read-only mount, which refuses writes whatever Landlock allows and cannot be
-renamed or removed. The launcher checks the live mount flags, and leaves the
-parent fully writable for such paths, so git works: it can create
-`.git/index.lock` beside a read-only `.git/hooks` and `.git/config`.
+parent's read-write rule. Under bwrap, the path itself already is: every
+`--ro-bind` is a read-only mount, which refuses writes whatever Landlock
+allows, and cannot itself be renamed or removed. The launcher checks the live
+mount flags, and leaves the parent fully writable for such paths, so git
+works: it can create `.git/index.lock` beside a read-only `.git/hooks` and
+`.git/config`.
+
+That protects the paths, **not what git does with them**. The parent stays
+writable, so a task can rename `.git` itself away (a directory holding mount
+points can still be moved) and put a new `.git` in its place, or create
+`.git/commondir` pointing at a directory it controls; either way the host's
+own git then reads config and hooks the task wrote. This is true of bwrap
+without Landlock too, and is tracked as gap 031c542ee0ae: the fix is in the
+policy (what is bound, and how the host runs git on a task's repo), not here.
 
 A read-only path that is *not* on a read-only mount (every one in plain mode,
 or under bwrap one shadowed by a later bind or a `--ro-bind-try` whose source
