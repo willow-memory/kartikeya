@@ -963,3 +963,41 @@ def test_write_task_log_env_keys_omit_identity_when_unattributed(
     meta = json.loads((Path(log_dir) / "meta.json").read_text())
     assert "GIT_AUTHOR_NAME" not in meta["env_keys"]
     assert "GIT_COMMITTER_NAME" not in meta["env_keys"]
+
+
+def _fake_rtk(tmp_path, body: str):
+    rtk = tmp_path / "rtk-plus"
+    rtk.write_text("#!/bin/sh\n" + body + "\n")
+    rtk.chmod(0o755)
+    return {"rtk_compress": {"enabled": True, "binary": str(rtk)}}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script as the fake binary")
+def test_rtk_rewrite_fails_open_on_undecodable_output(tmp_path):
+    # Gap 89db5297e0c2: rtk-plus output that is not UTF-8 raised
+    # UnicodeDecodeError (a ValueError, outside the OSError/SubprocessError
+    # catch) out of run_shell, failing the task. The rewrite is best-effort:
+    # it must fall back to the original command, not a corrupted one.
+    cfg = _fake_rtk(tmp_path, r"printf 'rtk git status\377'")
+    assert sandbox._rtk_rewrite("git status", cfg) == "git status"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script as the fake binary")
+def test_rtk_rewrite_still_rewrites_utf8_output(tmp_path):
+    cfg = _fake_rtk(tmp_path, "echo 'rtk git status — ok'")
+    out = sandbox._rtk_rewrite("git status", cfg)
+    assert out.endswith("git status — ok")
+    assert out != "git status"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script as the fake binary")
+def test_undecodable_rtk_output_does_not_fail_the_task(tmp_path, monkeypatch):
+    # End to end: the task runs its original command.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    cfg = _fake_rtk(tmp_path, r"printf 'rtk echo hi\377'")
+    monkeypatch.setattr(sandbox, "load_sandbox_config", lambda *a, **k: cfg)
+    result = sandbox.run_shell("echo hi", timeout=10)
+    assert result["returncode"] == 0, result
+    assert result["stdout"].strip() == "hi"
+    assert "rtk_rewritten" not in result

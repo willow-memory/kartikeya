@@ -1199,11 +1199,15 @@ def _rtk_rewrite(cmd: str, config: dict) -> str:
             [binary, "rewrite", cmd],
             capture_output=True,
             text=True,
+            # Strict UTF-8, not the locale and not errors="replace": this is a
+            # command about to run, and a replacement character would change
+            # it. Undecodable output means no rewrite (gap 89db5297e0c2).
+            encoding="utf-8",
             timeout=2,
             env={"PATH": os.environ.get("PATH", ""), "RTK_TELEMETRY_DISABLED": "1"},
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return cmd
     if result.returncode != 0:
         return cmd
