@@ -31,6 +31,13 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.4.3](https://github.com/willow-memory/kartikeya/compare/v0.4.2...v0.4.3) (2026-09-28)
+
+
+### Fixed
+
+* **queue:** close every SQLite connection when its operation ends ([bda2b55](https://github.com/willow-memory/kartikeya/commit/bda2b55bf8eb5a30947c7797b73f09330075749e))
+
 ## [0.4.2](https://github.com/willow-memory/kartikeya/compare/v0.4.1...v0.4.2) (2026-09-28)
 
 
