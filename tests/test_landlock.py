@@ -395,7 +395,9 @@ def test_a_read_only_path_two_levels_down_stays_read_only(box, monkeypatch):
 
 
 @needs_landlock
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can list a mode-000 dir")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 0)() == 0, reason="root can list a mode-000 dir"
+)
 def test_a_directory_that_cannot_be_listed_refuses_the_task(nested, tmp_path):
     # M8: carving must list the parent; if it cannot, the launcher refuses
     # rather than grant the parent read-write and lose the read-only child.
@@ -433,6 +435,7 @@ def test_the_launcher_resolves_symlinks_before_carving(tmp_path):
     assert (locked / "f").read_text() == "orig\n"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
 def test_a_launch_failure_keeps_its_landlock_state(box, monkeypatch):
     # M12: the exception row carries the landlock field like the others.
     monkeypatch.setenv("KART_LANDLOCK", "auto")
@@ -447,6 +450,7 @@ def test_a_launch_failure_keeps_its_landlock_state(box, monkeypatch):
     assert result["landlock"] == "abi7"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
 def test_carved_directories_are_listed():
     assert landlock.carved_dirs(
         ["/w", "/v"], ["/w/repo/.git/hooks", "/w2/x", "/v", "/elsewhere"]
@@ -454,6 +458,7 @@ def test_carved_directories_are_listed():
     assert landlock.carved_dirs(["/w"], ["/wx/y"]) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Landlock is Linux-only")
 def test_carving_is_announced_once(nested, monkeypatch, caplog):
     monkeypatch.setattr(landlock, "_warned_carving", frozenset())
     monkeypatch.setattr(landlock, "landlock_abi", lambda: 7)
