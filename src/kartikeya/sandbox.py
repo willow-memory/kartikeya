@@ -1323,10 +1323,11 @@ def _try_make_cgroup(limits: dict) -> str | None:
     Once a parent is configured, cgroup mode is what the operator asked for,
     so an unusable parent, or a failure to create or configure the leaf,
     raises CgroupSetupError and the task is refused rather than run without
-    a memory cap. The leaf is named ``kart-<owner pid>-<uuid>``: the uuid
-    keeps concurrent slots from colliding (gap 879c09c6e723), and the owner
-    pid lets ``sweep_stale_cgroup_leaves`` tell a dead worker's leftovers
-    from a live sibling's.
+    a memory cap. The leaf is named ``kart-<pid namespace>-<owner pid>-<uuid>``
+    (``_leaf_name``): the uuid keeps concurrent slots from colliding (gap
+    879c09c6e723), and the namespace and owner pid let
+    ``sweep_stale_cgroup_leaves`` tell a dead worker's leftovers from a live
+    sibling's.
     """
     parent, unusable = cgroup_setup.cgroup_parent_state()
     if not parent:
@@ -1655,6 +1656,12 @@ def run_shell(
             inner = [bash, "-c", cmd]
             if landlock_abi:
                 ll_rw, ll_ro = landlock.binds_from_bwrap_argv(prefix)
+                # Only binds bwrap will not mount read-only are carved.
+                landlock.warn_carving_once(
+                    landlock.carved_dirs(
+                        ll_rw, landlock.ro_binds_needing_carving(prefix)
+                    )
+                )
                 inner = landlock.wrap_argv(
                     inner, landlock.landlock_spec(ll_rw, ll_ro, bwrap=True)
                 )
@@ -1668,6 +1675,7 @@ def run_shell(
                 for host, _container, read_only in collect_bind_mounts():
                     (ll_ro if read_only else ll_rw).append(str(host))
                 ll_ro += [str(p) for p in collect_mcp_trust_ro_overlays()]
+                landlock.warn_carving_once(landlock.carved_dirs(ll_rw, ll_ro))
                 full = landlock.wrap_argv(
                     full, landlock.landlock_spec(ll_rw, ll_ro, bwrap=False)
                 )
