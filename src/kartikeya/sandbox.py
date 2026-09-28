@@ -1367,7 +1367,17 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     elif os.name == "nt":
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                [
+                    os.path.join(
+                        os.environ.get("SystemRoot", r"C:\Windows"),
+                        "System32",
+                        "taskkill.exe",
+                    ),
+                    "/F",
+                    "/T",
+                    "/PID",
+                    str(proc.pid),
+                ],
                 capture_output=True,
                 timeout=10,
                 check=False,
@@ -1470,6 +1480,10 @@ def run_shell(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Task output is arbitrary bytes: strict decoding turned invalid
+            # UTF-8 into a codec error that lost the output (and, after a
+            # timeout, the "timeout" verdict too).
+            errors="replace",
             env=run_env,
             cwd=cwd,
             pass_fds=pass_fds,

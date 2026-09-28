@@ -752,3 +752,23 @@ def test_timeout_drain_is_bounded_and_keeps_output(tmp_path, monkeypatch):
     assert time.time() - started < 15
     assert "hello" in result["stdout"], result
     assert "err" in result["stderr"], result
+
+
+@pytest.mark.parametrize("timeout_first", [True, False])
+def test_invalid_utf8_output_is_replaced_not_a_codec_error(monkeypatch, timeout_first):
+    # Loki A0814604 B3: invalid UTF-8 followed by a timeout returned a codec
+    # error (and lost stdout) instead of "timeout", because the post-kill
+    # drain decoded strictly. Without a timeout the same bytes were already a
+    # codec error before this PR. Both must decode with replacement.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    tail = "; sleep 30" if timeout_first else ""
+    result = sandbox.run_shell(
+        f"printf 'bad\\377'; echo hello{tail}", timeout=1 if timeout_first else 30
+    )
+    if timeout_first:
+        assert result.get("error") == "timeout", result
+    else:
+        assert result["returncode"] == 0, result
+    assert "hello" in result["stdout"], result
+    assert "�" in result["stdout"], result
