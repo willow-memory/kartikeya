@@ -529,187 +529,39 @@ def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]
     return out
 
 
-# Quote removal, roughly as bash does it, for a second pass of the text rules
-# (bite B0 of docs/design/parser-scanner.md). bash drops quotes, escaping
-# backslashes and backslash-newlines before running a word, so `c'u'rl`,
-# `c\url`, `$'cu'rl`, `cu\<newline>rl` and `~/.s''sh` run as `curl` and
-# `~/.ssh` while the rules, which read the text as written, never see those
-# words. The copies are only ever scanned in addition to the original: they
-# can add a block, never lift one. What they do not model (variables,
-# substitutions, globs, `$'\x..'` escapes) waits for the parser.
+# Quote removal, for a second pass of the text rules (bite B0 of
+# docs/design/parser-scanner.md). bash drops quotes, escaping backslashes and
+# backslash-newlines before running a word, so `c'u'rl`, `c\url`, `$'cu'rl`,
+# `cu\<newline>rl` and `~/.s''sh` run as `curl` and `~/.ssh` while the rules,
+# which read the text as written, never see those words.
+#
+# Operator ruling on #92 (union approach): every check reads the text as
+# written AND the quote-stripped copy, whole, heredoc bodies included, and a
+# hit in either refuses. Nothing here models bash to decide that some text is
+# data or a mere mention: that precision (quote pairing, command position,
+# heredoc parsing) belongs to the parser bites. The cost is that a quoted
+# mention (`grep -rn 'systemctl' src/`) is refused like the command it names.
+# What quote removal cannot model (variables, substitutions, globs, `$'\x..'`
+# escapes) also waits for the parser.
 _LINE_CONTINUATION = "\\\n"
 _ANSI_C_QUOTE_RE = re.compile(r"\$(?=['\"])")
 _BACKSLASH_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
 
 
 def _quote_normalised(text: str) -> str:
-    """Every quote and escaping backslash removed: for the per-fragment rule
-    pass. Errs towards removing too much (a backslash inside single quotes
-    is literal to bash, and is dropped here anyway)."""
+    """Every backslash-newline, quote and escaping backslash removed. Errs
+    towards removing too much (a backslash inside single quotes is literal
+    to bash, and is dropped here anyway): it only ever adds a refusal."""
     out = text.replace(_LINE_CONTINUATION, "")
     out = _ANSI_C_QUOTE_RE.sub("", out)
     out = _BACKSLASH_ESCAPE_RE.sub(r"\1", out)
     return out.replace("'", "").replace('"', "")
 
 
-# Outside quotes, these end a word as far as a quoted mention is concerned:
-# shell operators, and the brackets, commas and colons of the Python or JSON
-# a heredoc often carries (`["systemctl", ...]`, `{"systemctl": 1}`).
-_WORD_BREAKS = frozenset(";|&()[]{},:\n")
-# After these (and at the start of the text or a line) a word is in command
-# position: bash runs it, so a quoted command name there (`'systemctl' ...`)
-# is not a mention.
-_COMMAND_STARTERS = frozenset(";|&(){}\n")
-# A quoted word followed by one of these is list or dict data, not a command.
-_DATA_FOLLOWERS = frozenset(",:]}")
-# Inside double quotes a backslash escapes only these; elsewhere it is literal.
-_DQ_ESCAPABLE = frozenset('"\\$`\n')
-# Reserved words after which the next word is still a command.
-_KEYWORDS = frozenset(
-    {"if", "then", "else", "elif", "do", "while", "until", "!", "time", "{"}
-)
-# Words that leave the next word in command position: an assignment
-# (`X=1 cmd`) or a redirection with its target (`2>/dev/null cmd`).
-_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
-_REDIRECTION_RE = re.compile(r"(?:[0-9]*|&)(?:>>?|<<?<?|>&|<&|>\||<>)(.*)", re.DOTALL)
-
-
-def _unquote(text: str) -> str:
-    """``text`` with bash's quote removal applied to the words bash would run
-    as more than their quoted text: a word built from several pieces
-    (`sys''temctl`, `c'u'rl`, `run\\ner.py`), and a quoted word in command
-    position (`'systemctl' ...`). Any other word that is a single quoted
-    string is a mention (`grep -rn 'systemctl' src/`) and is kept as written,
-    as is a word that would contain whitespace once unquoted (never a command
-    name or a path bash runs as one) and a trailing comment. Quotes pair as
-    bash pairs them, across lines: a backslash escapes `"`, `\\`, `$`, a
-    backquote and a newline inside double quotes, and nothing inside single
-    quotes; `$'..'` has its own escapes.
-
-    This is an approximation of bash, not a parser, and it is only ever one
-    of several views the checks read, any of which can refuse
-    (`_mention_views`). It can add a refusal; it never lifts one."""
-    out: list[str] = []
-    pieces: list[tuple[str, str, bool]] = []  # (as written, as run, quoted)
-    command_position = True
-    redirect_target = False  # the next word is a redirection's target
-
-    def flush(follower: str) -> None:
-        nonlocal command_position, redirect_target
-        if not pieces:
-            return
-        raw = "".join(r for r, _i, _q in pieces)
-        run = "".join(i for _r, i, _q in pieces)
-        quoted = any(q for _r, _i, q in pieces)
-        mention = len(pieces) == 1 and not (
-            command_position and follower not in _DATA_FOLLOWERS
-        )
-        unquote = quoted and not mention and not any(c.isspace() for c in run)
-        out.append(run if unquote else raw)
-        pieces.clear()
-        if redirect_target:
-            redirect_target = False  # command position is unchanged
-            return
-        if command_position:
-            m = _REDIRECTION_RE.fullmatch(run)
-            if m is not None:
-                redirect_target = not m.group(1)
-                return
-            if _ASSIGNMENT_RE.match(run) or run in _KEYWORDS:
-                return
-        command_position = False
-
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if ch == "\\" and i + 1 < n:
-            if text[i + 1] != "\n":
-                pieces.append((text[i : i + 2], text[i + 1], True))
-            i += 2  # a backslash-newline is removed, and the word goes on
-        elif ch == "'" or (ch == "$" and text[i + 1 : i + 2] == "'"):
-            q = i + 1 if ch == "$" else i
-            j = q + 1
-            while j < n and text[j] != "'":
-                j += 2 if ch == "$" and text[j] == "\\" else 1  # $'..' escapes
-            if j >= n:  # unterminated: the rest is kept as written
-                pieces.append((text[i:], text[i:], False))
-                i = n
-            else:
-                pieces.append((text[i : j + 1], text[q + 1 : j], True))
-                i = j + 1
-        elif ch == '"' or (ch == "$" and text[i + 1 : i + 2] == '"'):
-            q = i + 1 if ch == "$" else i
-            j, inner = q + 1, []
-            while j < n and text[j] != '"':
-                if text[j] == "\\" and j + 1 < n and text[j + 1] in _DQ_ESCAPABLE:
-                    if text[j + 1] != "\n":
-                        inner.append(text[j + 1])
-                    j += 2
-                else:
-                    inner.append(text[j])
-                    j += 1
-            if j >= n:
-                pieces.append((text[i:], text[i:], False))
-                i = n
-            else:
-                pieces.append((text[i : j + 1], "".join(inner), True))
-                i = j + 1
-        elif ch == "#" and not pieces:
-            flush("")
-            j = text.find("\n", i)
-            j = n if j < 0 else j
-            out.append(text[i:j])  # a comment: kept as written
-            i = j
-        elif ch.isspace() or ch in _WORD_BREAKS:
-            flush(ch)
-            if ch in _COMMAND_STARTERS:
-                # `f(` right after a word is a call's text, not a subshell.
-                glued = (
-                    ch == "("
-                    and bool(out)
-                    and (out[-1][-1:].isalnum() or out[-1][-1:] == "_")
-                )
-                command_position = not glued
-                redirect_target = False
-            elif not ch.isspace():
-                command_position = False
-            out.append(ch)
-            i += 1
-        else:
-            j = i + 1
-            while j < n and not (
-                text[j].isspace()
-                or text[j] in _WORD_BREAKS
-                or text[j] in "'\"\\"
-                or (text[j] == "$" and text[j + 1 : j + 2] in ("'", '"'))
-            ):
-                j += 1
-            pieces.append((text[i:j], text[i:j], False))
-            i = j
-    flush("")
-    return "".join(out)
-
-
-def _mention_views(text: str) -> tuple[str, ...]:
-    """What the whole-text substring checks read: the text as written, and
-    two quote-removed views of it, any of which may refuse. Backslash-newlines
-    are removed first, as bash removes them. The whole text lexed at once
-    pairs a quoted string that spans lines as bash does; each line lexed on
-    its own keeps a stray quote on one line (in heredoc data, a comment)
-    from shifting the pairing on the next. Heredoc bodies are never skipped:
-    whether bash runs them is not decided here."""
-    joined = text.replace(_LINE_CONTINUATION, "")
-    views = [
-        text,
-        _unquote(joined),
-        "\n".join(_unquote(line) for line in joined.split("\n")),
-    ]
-    return tuple(dict.fromkeys(views))
-
-
-def _scan_texts(text: str, normalise=_quote_normalised) -> tuple[str, ...]:
-    """The text as written, and its normalised copy when that differs."""
-    normalised = normalise(text)
+def _scan_texts(text: str) -> tuple[str, ...]:
+    """The text as written, and its quote-stripped copy when that differs.
+    Every check reads both, and a hit in either refuses."""
+    normalised = _quote_normalised(text)
     return (text,) if normalised == text else (text, normalised)
 
 
@@ -947,7 +799,7 @@ def _hook_tamper_fragment(text: str) -> str | None:
         (
             frag
             for frag in _hook_guard_fragments()
-            if any(frag in t for t in _mention_views(text))
+            if any(frag in t for t in _scan_texts(text))
         ),
         None,
     )
@@ -982,7 +834,7 @@ def check_hook_tamper(task_text: str = "", *, script_body: str = "") -> dict | N
 def check_systemd_manager(task_text: str = "", *, script_body: str = "") -> dict | None:
     """Refuse systemctl/busctl in task or script_body — broker verbs only."""
     for where, text in (("task", task_text or ""), ("script_body", script_body or "")):
-        if text and any(_SYSTEMD_MANAGER_RE.search(t) for t in _mention_views(text)):
+        if text and any(_SYSTEMD_MANAGER_RE.search(t) for t in _scan_texts(text)):
             return {
                 "error": _SYSTEMD_MANAGER_REFUSAL,
                 "kart_scan": {

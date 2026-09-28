@@ -1093,28 +1093,11 @@ def test_a_quote_split_protected_path_is_refused(monkeypatch):
         # quoted `;` would split off `use stash` as a command of its own, and
         # `git reset --hard` would lose the downgrade an allowed verb gives.
         'git commit -m "docs: never run git reset --hard; use stash"',
-        # Loki 0BE745C3 finding 1: a quoted *mention* is not a command. The
-        # whole-text checks only unquote words built from several pieces.
-        "grep -rn 'systemctl' src/",
-        'cat <<EOF\nprint("systemctl is refused here")\nEOF',
+        # These still pass under the union: stripped, the name follows `[`,
+        # `{` or `=`, which the systemd rule does not read as a command start.
         'cat <<EOF\nsubprocess.run(["systemctl", "--user", "status"])\nEOF',
-        # Loki 6FB4C5F1: heredoc payload is data, and only command lines are
-        # unquoted, each on its own, so these mentions stay mentions.
         "cat <<'EOF'\nd = {\"systemctl\": 1}\nEOF",
-        'cat <<\'EOF\'\n"""systemctl+git helper"""\nEOF',
-        "cat <<'EOF'\nit's a \"systemctl\" note\nx = 'systemctl'\nEOF",
-        'echo "sys\\\ntemctl"',
-        'grep -c "systemctl" log.txt',
         "x='systemctl'",
-        "echo x # 'systemctl'",
-        "[ \"$u\" = 'systemctl' ] && echo y",
-        "[ 'systemctl' = \"$u\" ] && echo y",  # after `[`, not a command
-        "echo ok # never sys''temctl here",  # a comment is not run
-        "echo call('systemctl')",  # `call(` is text, not a subshell
-        # Python and JSON data in a heredoc: a lone quoted word followed by
-        # `,` `:` `]` `}` is data, and a word with whitespace is never run.
-        'cat <<\'EOF\'\nCMDS = [\n    "systemctl",\n    "--user",\n]\nEOF',
-        "cat <<'EOF'\nif unit == 'systemctl':\n    pass\nEOF",
     ],
 )
 def test_ordinary_quoting_is_still_allowed(task):
@@ -1189,12 +1172,10 @@ def test_the_text_as_written_is_still_scanned(task):
     assert task_scan.check_kart_task(task) is not None, task
 
 
-# Loki 6FB4C5F1 and F78F58D7. The mention checks read several views and any
-# of them refuses (`_mention_views`): the text as written, the whole text
-# unquoted at once (a string spanning lines pairs as bash pairs it), and each
-# line unquoted on its own, with and without backslash-newlines removed (a
-# stray quote on one line does not shift the next). Heredoc bodies are always
-# read: whether bash runs them is not decided by the scanner.
+# Loki 6FB4C5F1 and F78F58D7, and the operator's ruling on #92 (union
+# approach): every check reads the text as written and its quote-stripped
+# copy, whole, heredoc bodies included, and a hit in either refuses. No model
+# of bash decides that text is data.
 _S = "sys''temctl --user restart x"
 _Q = "'systemctl' --user restart x"
 _H = "cat host/hooks/run''ner.py"
@@ -1260,33 +1241,22 @@ def test_a_stray_quote_does_not_hide_a_split_protected_path(setup, monkeypatch):
     assert refusal["kart_scan"]["category"] == "hook_tamper"
 
 
+def test_every_check_reads_the_text_as_written_and_the_stripped_copy():
+    assert task_scan._scan_texts("sys''temctl") == ("sys''temctl", "systemctl")
+    assert task_scan._scan_texts("plain") == ("plain",)
+
+
+# The ruling's accepted cost, pinned so that modelling mentions again is a
+# deliberate change: a quoted mention is refused like the command it names.
 @pytest.mark.parametrize(
-    ("text", "unquoted"),
+    "task",
     [
-        ("sys''temctl x", "systemctl x"),
-        ("c'u'rl -x", "curl -x"),
-        ("$'cu'rl", "curl"),
-        ("run\\ner.py", "runner.py"),
-        ("'systemctl' x", "systemctl x"),  # command position: run
-        ("X=1 'systemctl' x", "X=1 systemctl x"),
-        ("2>/dev/null 'systemctl' x", "2>/dev/null systemctl x"),
-        ("> out 'systemctl' x", "> out systemctl x"),
-        ("grep 'systemctl' x", "grep 'systemctl' x"),  # an argument: a mention
-        ('d = ["systemctl", "x"]', 'd = ["systemctl", "x"]'),
-        ('{"systemctl": 1}', '{"systemctl": 1}'),  # data
-        ("'systemctl x' y", "'systemctl x' y"),  # whitespace: not a command name
-        ('echo "a\\"b" c', 'echo "a\\"b" c'),
-        ('echo "\\""; sys\'\'temctl', 'echo "\\""; systemctl'),
-        ("echo x # 'systemctl'\n'systemctl' y", "echo x # 'systemctl'\nsystemctl y"),
-        ("echo 'a\nb'; sys''temctl", "echo 'a\nb'; systemctl"),
-        ("it's", "it's"),
+        "grep -rn 'systemctl' src/",
+        "cat <<'EOF'\nCMDS = [\n    \"systemctl\",\n]\nEOF",
+        "echo ok # never sys''temctl here",
     ],
 )
-def test_unquote(text, unquoted):
-    assert task_scan._unquote(text) == unquoted
-
-
-def test_mention_views_include_the_text_as_written():
-    views = task_scan._mention_views("grep 'x' y\nsys''temctl")
-    assert views[0] == "grep 'x' y\nsys''temctl"
-    assert any("systemctl" in v for v in views[1:])
+def test_a_quoted_mention_is_refused_like_the_command(task):
+    refusal = task_scan.check_kart_task(task)
+    assert refusal is not None, task
+    assert refusal["kart_scan"]["category"] == "systemd_manager"
