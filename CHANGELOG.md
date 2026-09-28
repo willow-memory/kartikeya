@@ -36,7 +36,7 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **cgroup:** an installed but stopped kart.slice counts as configured ([4add1b6](https://github.com/willow-memory/kartikeya/commit/4add1b65f9064da0e10e04d5f11ef465551d1fd1))
+* **cgroup:** an installed but stopped kart.slice counts as configured ([976963e](https://github.com/willow-memory/kartikeya/commit/976963e31991ad5bbe6952b1ce8e4951578ea396))
 
 ## [0.4.5](https://github.com/willow-memory/kartikeya/compare/v0.4.4...v0.4.5) (2026-09-28)
 
