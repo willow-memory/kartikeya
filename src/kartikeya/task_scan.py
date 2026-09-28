@@ -529,13 +529,41 @@ def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]
     return out
 
 
+# Quote removal, roughly as bash does it, for a second pass of the text rules
+# (bite B0 of docs/design/parser-scanner.md). bash drops quotes and escaping
+# backslashes before running a word, so `c'u'rl`, `c\url`, `$'cu'rl` and
+# `~/.s''sh` run as `curl` and `~/.ssh` while the rules, which read the text
+# as written, never see those words. The copy is only ever scanned in
+# addition to the original: it can add a block, never lift one. It is an
+# approximation that errs towards removing too much (a backslash inside
+# single quotes is literal to bash, and is dropped here anyway); what it does
+# not model (variables, substitutions, globs, `$'\x..'` escapes) waits for
+# the parser.
+_ANSI_C_QUOTE_RE = re.compile(r"\$(?=['\"])")
+_BACKSLASH_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
+
+
+def _quote_normalised(text: str) -> str:
+    out = _ANSI_C_QUOTE_RE.sub("", text)
+    out = _BACKSLASH_ESCAPE_RE.sub(r"\1", out)
+    return out.replace("'", "").replace('"', "")
+
+
+def _scan_texts(text: str) -> tuple[str, ...]:
+    """The text as written, and its quote-normalised copy when that differs."""
+    normalised = _quote_normalised(text)
+    return (text,) if normalised == text else (text, normalised)
+
+
 def _scan_shell_fragment(fragment: str) -> ScanIssue | None:
     text = fragment.strip()
     if not text:
         return None
+    # The allowance is decided on the text as written: the shlex split behind
+    # it already applies bash's quoting rules.
     fleet = _fleet_allowed(text)
-    issues = _blocking_issues(scan_bash(text), fleet=fleet)
-    return worst(issues)
+    issues = [i for t in _scan_texts(text) for i in scan_bash(t)]
+    return worst(_blocking_issues(issues, fleet=fleet))
 
 
 def _shell_fragments_from_task(task_text: str) -> list[str]:
@@ -757,7 +785,14 @@ def check_heredoc_wrapper_collision(
 def _hook_tamper_fragment(text: str) -> str | None:
     if not text:
         return None
-    return next((frag for frag in _hook_guard_fragments() if frag in text), None)
+    return next(
+        (
+            frag
+            for frag in _hook_guard_fragments()
+            if any(frag in t for t in _scan_texts(text))
+        ),
+        None,
+    )
 
 
 def check_hook_tamper(task_text: str = "", *, script_body: str = "") -> dict | None:
@@ -789,7 +824,7 @@ def check_hook_tamper(task_text: str = "", *, script_body: str = "") -> dict | N
 def check_systemd_manager(task_text: str = "", *, script_body: str = "") -> dict | None:
     """Refuse systemctl/busctl in task or script_body — broker verbs only."""
     for where, text in (("task", task_text or ""), ("script_body", script_body or "")):
-        if text and _SYSTEMD_MANAGER_RE.search(text):
+        if text and any(_SYSTEMD_MANAGER_RE.search(t) for t in _scan_texts(text)):
             return {
                 "error": _SYSTEMD_MANAGER_REFUSAL,
                 "kart_scan": {

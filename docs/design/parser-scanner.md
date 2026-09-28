@@ -295,7 +295,7 @@ new check is added to the substring match, never replacing it.
 
 | Bite | Scope | Dependency |
 |---|---|---|
-| **B0** | quote-normalised second regex pass, add-only; the section 1 rows as tests | none |
+| **B0** | quote-normalised second regex pass, add-only; the section 1 rows as tests. **Landed:** the quote-split rows block; the variable, substitution and glob rows (and `$'\x..'` escapes) stay as strict xfails for B2 | none |
 | **B1** | shared `parse_units()` for the runner and the scanner, no behaviour change | none |
 | **B2** | shadow classifier behind `KART_SCAN_ENGINE` (default `regex`): pinned optional extra, refuses unhandled node types, size cap and timeout, agree/disagree recording only | `kartikeya[parser]` |
 | **B3** | differential corpus, `bash -n` agreement in CI, mutation proof | none new |
