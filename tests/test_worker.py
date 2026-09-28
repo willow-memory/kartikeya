@@ -7,6 +7,7 @@ neither available nor the thing under test — the queue/worker/execute wiring i
 Real bwrap execution is exercised on a host with bubblewrap.
 """
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -118,7 +119,7 @@ def test_worker_reaps_and_reports_a_dead_workers_orphaned_claim(tmp_path, caplog
     q = _queue(tmp_path)
     q.submit("ORPHAN", "sleep 999")
     q.claim_pending("kart", 1)
-    with sqlite3.connect(tmp_path / "kart.db") as conn:
+    with contextlib.closing(sqlite3.connect(tmp_path / "kart.db")) as conn, conn:
         conn.execute(
             "UPDATE tasks SET claimed_at=datetime('now', '-7200 seconds') "
             "WHERE task_id=?",
