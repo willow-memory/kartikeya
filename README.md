@@ -90,8 +90,9 @@ worker --slots N` overrides either. Like `KART_CGROUP_PARENT`, set these in the
 worker unit's `Environment=`, then restart it.
 
 **Landlock (second filesystem lock):** `KART_LANDLOCK` puts a kernel Landlock
-ruleset behind bwrap, allowing only the paths bwrap mounts (read-write binds
-writable, read-only binds read and execute). In plain mode
+ruleset behind bwrap, allowing only the paths bwrap mounts: read-only binds
+get read and execute, and read-write binds get full rights except where one
+holds a read-only path (see carving below). In plain mode
 (`WILLOW_KART_NO_BWRAP=1`) it is the only filesystem confinement, and the host's
 `/tmp` is not granted, so give tasks a writable bind for scratch.
 
@@ -112,8 +113,11 @@ Landlock can only *add* rights, so a read-only path inside a read-write bind
 each of its other entries gets read-write. The cost is that nothing can be
 created or removed *directly in* a carved directory. With `.git/hooks`
 read-only that includes `.git/` itself, so `git commit` cannot write
-`.git/index.lock`. A policy that nests read-only paths inside writable repos is
-therefore not yet compatible with `KART_LANDLOCK` for git work.
+`.git/index.lock`. **A policy that nests read-only paths inside writable repos
+is therefore not yet compatible with `KART_LANDLOCK` for git work.** The worker
+logs a warning naming the carved directories the first time a policy carves
+any, so the cost shows up before a task fails on it. Paths are resolved through
+symlinks before carving, so a bind named through a link is still carved.
 
 _Coming with stage 2 — once the worker core lands, this section documents
 `kartikeya worker` end to end (submit → worker runs → poll)._

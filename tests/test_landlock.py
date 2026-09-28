@@ -9,6 +9,7 @@ everywhere.
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -354,3 +355,113 @@ def test_pty_devices_are_granted_under_bwrap_only():
     plain = json.loads(landlock.landlock_spec([], [], bwrap=False))
     assert {"/dev/ptmx", "/dev/pts"} <= set(boxed["rw"])
     assert not {"/dev/ptmx", "/dev/pts"} & set(plain["rw"])
+
+
+# ── Loki 0BBEF1FF: follow-ups ────────────────────────────────────────────────
+
+
+def _add_ro(path):
+    cfg = Path(os.environ["KART_SANDBOX_CONFIG"])
+    data = json.loads(cfg.read_text())
+    data["bind_read_only"].append(str(path))
+    cfg.write_text(json.dumps(data))
+
+
+@needs_landlock
+def test_a_read_only_path_two_levels_down_stays_read_only(box, monkeypatch):
+    # M14: like repo/.git/hooks: carving must recurse through .git, which is
+    # itself carved, and leave .git's other entries writable.
+    rw, _, _ = box
+    hooks = rw / "repo" / ".git" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "pre-commit").write_text("orig\n")
+    (rw / "repo" / ".git" / "objects").mkdir()
+    _add_ro(hooks)
+    monkeypatch.setenv("KART_LANDLOCK", "enforce")
+    result = sandbox.run_shell(
+        f"(echo EVIL > {hooks}/pre-commit) 2>/dev/null || echo hook-denied; "
+        f"(echo x > {hooks}/new) 2>/dev/null || echo hook-create-denied; "
+        f"(echo x > {rw}/repo/.git/objects/o) && echo objects-ok; "
+        f"(echo x > {rw}/repo/.git/index.lock) 2>/dev/null || echo git-dir-carved",
+        timeout=20,
+    )
+    assert result["stdout"].split() == [
+        "hook-denied",
+        "hook-create-denied",
+        "objects-ok",
+        "git-dir-carved",
+    ], result
+    assert (hooks / "pre-commit").read_text() == "orig\n"
+
+
+@needs_landlock
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can list a mode-000 dir")
+def test_a_directory_that_cannot_be_listed_refuses_the_task(nested, tmp_path):
+    # M8: carving must list the parent; if it cannot, the launcher refuses
+    # rather than grant the parent read-write and lose the read-only child.
+    rw, _, _ = nested
+    marker = tmp_path / "ran"
+    rw.chmod(0o300)
+    try:
+        result = sandbox.run_shell(f"touch {marker}", timeout=20)
+    finally:
+        rw.chmod(0o755)
+    assert result["error"] == "landlock_failed", result
+    assert result["returncode"] == landlock.LANDLOCK_FAILED_EXIT
+    assert not marker.exists()
+
+
+@needs_landlock
+def test_the_launcher_resolves_symlinks_before_carving(tmp_path):
+    # The host resolves config binds, but the launcher must not depend on
+    # it: given a read-write path named through a symlink and its read-only
+    # child by real path, a prefix check on the unresolved names misses the
+    # nesting, nothing is carved, and the child is writable via the parent.
+    rw = tmp_path / "rw"
+    locked = rw / "locked"
+    locked.mkdir(parents=True)
+    (locked / "f").write_text("orig\n")
+    link = tmp_path / "rw-link"
+    link.symlink_to(rw)
+    spec = landlock.landlock_spec([str(link)], ["/usr", str(locked)], bwrap=False)
+    argv = landlock.wrap_argv(
+        ["/bin/sh", "-c", f"(echo EVIL > {locked}/f) 2>/dev/null || echo denied"],
+        spec,
+    )
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    assert out.stdout.strip() == "denied", out
+    assert (locked / "f").read_text() == "orig\n"
+
+
+def test_a_launch_failure_keeps_its_landlock_state(box, monkeypatch):
+    # M12: the exception row carries the landlock field like the others.
+    monkeypatch.setenv("KART_LANDLOCK", "auto")
+    monkeypatch.setattr(landlock, "landlock_abi", lambda: 7)
+
+    def boom(*a, **k):
+        raise OSError("no exec for you")
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", boom)
+    result = sandbox.run_shell("true", timeout=20)
+    assert result["error"] == "no exec for you", result
+    assert result["landlock"] == "abi7"
+
+
+def test_carved_directories_are_listed():
+    assert landlock.carved_dirs(
+        ["/w", "/v"], ["/w/repo/.git/hooks", "/w2/x", "/v", "/elsewhere"]
+    ) == ["/w", "/w/repo", "/w/repo/.git"]
+    assert landlock.carved_dirs(["/w"], ["/wx/y"]) == []
+
+
+def test_carving_is_announced_once(nested, monkeypatch, caplog):
+    monkeypatch.setattr(landlock, "_warned_carving", frozenset())
+    monkeypatch.setattr(landlock, "landlock_abi", lambda: 7)
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *a, **k: 1 / 0)
+    rw, _, _ = nested
+    with caplog.at_level(logging.WARNING, logger=landlock._log.name):
+        sandbox.run_shell("true", timeout=20)
+        sandbox.run_shell("true", timeout=20)
+    carved = [r for r in caplog.records if "carved" in r.getMessage()]
+    assert len(carved) == 1, caplog.text
+    assert str(rw) in carved[0].getMessage()

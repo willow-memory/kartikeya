@@ -136,6 +136,54 @@ def landlock_spec(rw_paths, ro_paths, *, bwrap: bool) -> str:
     return json.dumps({"rw": list(rw), "ro": [p for p in ro if p not in rw]})
 
 
+def carved_dirs(rw_paths, ro_paths) -> list[str]:
+    """Directories the launcher will carve: each read-write path with a
+    read-only descendant, and every directory between the two. Nothing can
+    be created, removed or renamed directly in these (the right would be
+    inherited by the read-only child), so e.g. ``git commit`` fails in a
+    repo whose ``.git/hooks`` is read-only: it cannot write .git/index.lock.
+    Paths are compared as given (the launcher resolves symlinks too; this
+    host-side view is for the warning)."""
+    ro = [os.path.normpath(str(p)) for p in ro_paths]
+    out: set[str] = set()
+    for r in (os.path.normpath(str(p)) for p in rw_paths):
+        prefix = r.rstrip("/") + "/"
+        for d in ro:
+            if d.startswith(prefix):
+                parts = d[len(prefix) :].split("/")[:-1]
+                cur = r
+                out.add(cur)
+                for part in parts:
+                    cur = os.path.join(cur, part)
+                    out.add(cur)
+    return sorted(out)
+
+
+_warned_carving: frozenset[str] = frozenset()
+
+
+def warn_carving_once(carved: list[str]) -> None:
+    """Say once per distinct set, loudly, which directories lose create and
+    remove rights under Landlock. The cost is otherwise invisible until a
+    task (a git commit, typically) fails with EACCES."""
+    global _warned_carving
+    key = frozenset(carved)
+    if not carved or key == _warned_carving:
+        return
+    _warned_carving = key
+    shown = ", ".join(carved[:5]) + (
+        f", … (+{len(carved) - 5})" if len(carved) > 5 else ""
+    )
+    _log.warning(
+        "KART_LANDLOCK: %d writable director%s hold read-only paths and are "
+        "carved: nothing can be created, removed or renamed directly in them "
+        "(git commit fails where .git/hooks is read-only): %s",
+        len(carved),
+        "y" if len(carved) == 1 else "ies",
+        shown,
+    )
+
+
 _BWRAP_RW_BINDS = ("--bind", "--bind-try", "--dev-bind", "--dev-bind-try")
 _BWRAP_RO_BINDS = ("--ro-bind", "--ro-bind-try")
 
@@ -249,7 +297,11 @@ def add_rule(path, access):
         os.close(fd)
 
 def norm(p):
-    return os.path.normpath(p)
+    # Resolve symlinks before comparing: a writable bind named through a
+    # symlink (or a read-only one) must still be seen as the parent (or the
+    # descendant) it really is, or carving is skipped and the read-only path
+    # stays writable through the parent's rule.
+    return os.path.realpath(p)
 
 def under(child, parent):
     return child != parent and child.startswith(parent.rstrip("/") + "/")
