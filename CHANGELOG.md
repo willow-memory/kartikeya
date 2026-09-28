@@ -31,6 +31,14 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.4.1](https://github.com/willow-memory/kartikeya/compare/v0.4.0...v0.4.1) (2026-09-28)
+
+
+### Fixed
+
+* **sandbox:** a Kart task carries only its submitter's identity ([b0d088a](https://github.com/willow-memory/kartikeya/commit/b0d088a2c7a76c4664e47e0cbb245ddaf75e9f23))
+* **sandbox:** per-task cgroup leaves that fail closed ([62ffc68](https://github.com/willow-memory/kartikeya/commit/62ffc68850f3e5b0ec873606acfa6815a4c00513))
+
 ## [0.4.0](https://github.com/willow-memory/kartikeya/compare/v0.3.4...v0.4.0) (2026-09-28)
 
 
