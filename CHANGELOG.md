@@ -36,9 +36,7 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **sandbox:** a Kart task carries only its submitter's identity ([91ae4a0](https://github.com/willow-memory/kartikeya/commit/91ae4a0c21d8e7604a77d97596280cd17fe02184))
 * **sandbox:** a Kart task carries only its submitter's identity ([b0d088a](https://github.com/willow-memory/kartikeya/commit/b0d088a2c7a76c4664e47e0cbb245ddaf75e9f23))
-* **sandbox:** per-task cgroup leaves that fail closed ([c3f3a05](https://github.com/willow-memory/kartikeya/commit/c3f3a05d8f505dbad5f5e2b49aee5c9a97083ca9))
 * **sandbox:** per-task cgroup leaves that fail closed ([62ffc68](https://github.com/willow-memory/kartikeya/commit/62ffc68850f3e5b0ec873606acfa6815a4c00513))
 
 ## [0.4.0](https://github.com/willow-memory/kartikeya/compare/v0.3.4...v0.4.0) (2026-09-28)
