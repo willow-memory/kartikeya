@@ -5,9 +5,13 @@ decoupling touched: config resolution order, and the network-directive contract
 that willow-mcp's B-21 strip depends on.
 """
 
+import contextlib
 import json
 import os
+import shutil
+import signal
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -377,12 +381,12 @@ def test_resource_limits_env_overrides(monkeypatch):
 
 
 def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatch):
-    # No delegated parent → in-sandbox prlimit/ulimit wrap, not host preexec.
+    # No delegated parent → in-sandbox prlimit/ulimit wrap, no host-side prefix.
     monkeypatch.delenv("KART_CGROUP_PARENT", raising=False)
     monkeypatch.setattr(sandbox.cgroup_setup, "resolve_cgroup_parent", lambda: None)
-    preexec, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024**2, "pids": 64})
+    prefix, cleanup, mode = sandbox._limits_context({"mem": 256 * 1024**2, "pids": 64})
     assert mode == "rlimit"
-    assert preexec is None and cleanup is None
+    assert prefix is None and cleanup is None
     wrapped = sandbox.wrap_task_with_rlimits(
         "echo hi", {"mem": 256 * 1024**2, "pids": 64}
     )
@@ -393,9 +397,54 @@ def test_limits_context_falls_back_to_rlimit_without_delegated_cgroup(monkeypatc
 
 def test_limits_context_uses_cgroup_when_parent_delegated(monkeypatch):
     monkeypatch.setattr(sandbox, "_try_make_cgroup", lambda limits: "/fake/kart-leaf")
-    preexec, cleanup, mode = sandbox._limits_context({"mem": 4096, "pids": 8})
+    prefix, cleanup, mode = sandbox._limits_context({"mem": 4096, "pids": 8})
     assert mode == "cgroup"
-    assert callable(preexec) and callable(cleanup)
+    assert prefix[:2] == ["/bin/sh", "-c"]
+    assert prefix[-1] == os.path.join("/fake/kart-leaf", "cgroup.procs")
+    assert callable(cleanup)
+
+
+def test_run_shell_passes_no_preexec_fn(monkeypatch):
+    # preexec_fn runs Python between fork and exec, unsafe once the worker's
+    # thread pool is up; the cgroup join must go through the exec wrapper.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setattr(sandbox, "_try_make_cgroup", lambda limits: "/fake/kart-leaf")
+    seen = {}
+    real_popen = sandbox.subprocess.Popen
+
+    def spy(argv, **kw):
+        seen["argv"], seen["preexec_fn"] = argv, kw.get("preexec_fn")
+        return real_popen(["true"], **kw)
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", spy)
+    sandbox.run_shell("echo hi", timeout=10)
+    assert seen["preexec_fn"] is None
+    assert seen["argv"][:2] == ["/bin/sh", "-c"]
+
+
+@pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="POSIX sh")
+def test_cgroup_join_wrapper_writes_own_pid_then_execs(tmp_path):
+    # The wrapper must write the pid that then becomes the exec'd command
+    # (so bwrap itself starts in the cgroup), and must not abort the task
+    # when the write fails.
+    import subprocess
+
+    procs = tmp_path / "cgroup.procs"
+    out = subprocess.run(
+        ["/bin/sh", "-c", sandbox._CGROUP_JOIN_SH, str(procs), "sh", "-c", "echo $$"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert procs.read_text().strip() == out.stdout.strip()
+    missing = tmp_path / "no-such-dir" / "cgroup.procs"
+    out = subprocess.run(
+        ["/bin/sh", "-c", sandbox._CGROUP_JOIN_SH, str(missing), "echo", "ran"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout == "ran\n" and out.stderr == ""
 
 
 _LARGE_VA_CMD = (
@@ -631,3 +680,95 @@ def test_bash_lookup_skips_the_system_directory_and_takes_the_next_one(tmp_path)
     assert found(path, str(tmp_path / "Windows")) == os.path.normcase(str(git / name))
     assert found(str(system), str(tmp_path / "Windows")) is None
     assert found(path, None) == os.path.normcase(str(system / name))
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie still answers kill(0); count it as dead.
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().split(") ", 1)[1][0] != "Z"
+    except OSError:
+        return False
+
+
+def test_timeout_returns_timeout_result(monkeypatch):
+    # Runs on every platform, Windows included: the timeout path must yield a
+    # "timeout" row, never an exception from the kill (os.killpg is POSIX-only).
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    started = time.time()
+    result = sandbox.run_shell("sleep 60", timeout=1)
+    assert result["error"] == "timeout", result
+    assert time.time() - started < 15
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+@pytest.mark.parametrize("stdout_open", [False, True])
+def test_timeout_kills_backgrounded_grandchild(tmp_path, monkeypatch, stdout_open):
+    # A timed-out task must take its whole process tree with it. Before the
+    # process-group kill, plain mode left a backgrounded `sleep` running after
+    # the task was reported "timeout". stdout_open=True keeps the grandchild on
+    # the captured pipe, the case that can also stall the drain.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    pidfile = tmp_path / "grandchild.pid"
+    redirect = "" if stdout_open else " >/dev/null 2>&1"
+    cmd = f"sleep 60{redirect} & echo $! > {pidfile}; sleep 60"
+    started = time.time()
+    result = sandbox.run_shell(cmd, timeout=1)
+    assert result["error"] == "timeout", result
+    assert time.time() - started < 15
+    pid = int(pidfile.read_text())
+    deadline = time.time() + 5
+    while _pid_alive(pid) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not _pid_alive(pid), f"grandchild {pid} outlived the timed-out task"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("setsid") is None, reason="needs POSIX setsid(1)"
+)
+def test_timeout_drain_is_bounded_and_keeps_output(tmp_path, monkeypatch):
+    # A descendant that setsid()s out of the task's group escapes the group
+    # kill and keeps the output pipes open. The post-kill drain must stay
+    # bounded (Loki A0814604 B1) and what the task wrote before the timeout
+    # must survive into the result, not be dropped as bytes (B2).
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    pidfile = tmp_path / "escaped.pid"
+    cmd = f"echo hello; echo err >&2; setsid sleep 30 & echo $! > {pidfile}; sleep 30"
+    started = time.time()
+    try:
+        result = sandbox.run_shell(cmd, timeout=1)
+    finally:
+        if pidfile.exists():
+            with contextlib.suppress(ProcessLookupError, ValueError):
+                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+    assert result["error"] == "timeout", result
+    assert time.time() - started < 15
+    assert "hello" in result["stdout"], result
+    assert "err" in result["stderr"], result
+
+
+@pytest.mark.parametrize("timeout_first", [True, False])
+def test_invalid_utf8_output_is_replaced_not_a_codec_error(monkeypatch, timeout_first):
+    # Loki A0814604 B3: invalid UTF-8 followed by a timeout returned a codec
+    # error (and lost stdout) instead of "timeout", because the post-kill
+    # drain decoded strictly. Without a timeout the same bytes were already a
+    # codec error before this PR. Both must decode with replacement.
+    monkeypatch.setenv("WILLOW_KART_NO_BWRAP", "1")
+    monkeypatch.setenv("WILLOW_KART_NO_RLIMIT", "1")
+    tail = "; sleep 30" if timeout_first else ""
+    result = sandbox.run_shell(
+        f"printf 'bad\\377'; echo hello{tail}", timeout=1 if timeout_first else 30
+    )
+    if timeout_first:
+        assert result.get("error") == "timeout", result
+    else:
+        assert result["returncode"] == 0, result
+    assert "hello" in result["stdout"], result
+    assert "�" in result["stdout"], result

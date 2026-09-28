@@ -29,6 +29,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sysconfig
 import tempfile
@@ -1313,22 +1314,26 @@ def _try_make_cgroup(limits: dict) -> str | None:
         return None
 
 
-def _limits_context(limits: dict):
-    """Return (preexec_fn, cleanup_fn, mode).
+# Joins the cgroup from inside the child, then execs the real argv in the same
+# process. $0 carries the cgroup.procs path, "$@" the argv. A failed write is
+# silent and non-fatal, matching the old preexec hook: the task runs unlimited.
+_CGROUP_JOIN_SH = '{ echo $$ >"$0"; } 2>/dev/null; exec "$@"'
 
-    cgroup: preexec joins the bwrap child to a leaf cgroup (host-side).
-    rlimit: no preexec — limits are applied inside the sandbox via
+
+def _limits_context(limits: dict):
+    """Return (argv_prefix, cleanup_fn, mode).
+
+    cgroup: argv_prefix is an exec wrapper that moves the child into a leaf
+    cgroup before exec'ing bwrap (host-side), so bwrap and everything under
+    it start limited. It replaces a preexec_fn, which is unsafe once the
+    worker's thread pool is running (a lock held at fork can deadlock the
+    child).
+    rlimit: no prefix — limits are applied inside the sandbox via
     wrap_task_with_rlimits() so bwrap setup is not capped.
     """
     leaf = _try_make_cgroup(limits)
     if leaf:
-
-        def _preexec_cgroup() -> None:
-            try:
-                with open(os.path.join(leaf, "cgroup.procs"), "w") as f:
-                    f.write(str(os.getpid()))
-            except OSError:
-                pass
+        prefix = ["/bin/sh", "-c", _CGROUP_JOIN_SH, os.path.join(leaf, "cgroup.procs")]
 
         def _cleanup_cgroup() -> None:
             try:
@@ -1336,9 +1341,50 @@ def _limits_context(limits: dict):
             except OSError:
                 pass
 
-        return _preexec_cgroup, _cleanup_cgroup, "cgroup"
+        return prefix, _cleanup_cgroup, "cgroup"
 
     return None, None, "rlimit"
+
+
+def _timeout_text(data: str | bytes | None) -> str:
+    """Partial output from a TimeoutExpired. communicate() hands it back as
+    raw bytes even in text mode when it times out, so decode rather than drop."""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data or ""
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the process group led by ``proc`` (see start_new_session in
+    run_shell), then reap ``proc``. The group may already be gone. Windows
+    has no os.killpg; ``taskkill /T`` kills the tree there instead. It must run
+    before proc.kill(), since it finds descendants through the live parent.
+    Without it a surviving grandchild holds the output pipes, and closing
+    them blocks until it exits."""
+    if hasattr(os, "killpg"):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    elif os.name == "nt":
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                [
+                    os.path.join(
+                        os.environ.get("SystemRoot", r"C:\Windows"),
+                        "System32",
+                        "taskkill.exe",
+                    ),
+                    "/F",
+                    "/T",
+                    "/PID",
+                    str(proc.pid),
+                ],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+    with contextlib.suppress(OSError):
+        proc.kill()
+    proc.wait()
 
 
 def run_shell(
@@ -1378,10 +1424,10 @@ def run_shell(
     rtk_rewritten = cmd != original_cmd
 
     limits = _resource_limits()
-    preexec_fn = cleanup = None
+    limits_prefix = cleanup = None
     resource_mode = "none"
     if limits:
-        preexec_fn, cleanup, resource_mode = _limits_context(limits)
+        limits_prefix, cleanup, resource_mode = _limits_context(limits)
         if resource_mode == "rlimit":
             cmd = wrap_task_with_rlimits(cmd, limits)
 
@@ -1408,6 +1454,8 @@ def run_shell(
         sandbox = "bwrap"
     else:
         full = argv
+    if limits_prefix:
+        full = limits_prefix + full
 
     def _setup_state() -> str | None:
         if status_file is None:
@@ -1420,24 +1468,51 @@ def run_shell(
         return "ok" if '"child-pid"' in txt else "failed"
 
     try:
-        proc = subprocess.run(
+        # start_new_session puts the task in its own process group so a timeout
+        # kills the whole tree, not just the direct child. subprocess.run's own
+        # timeout kills only that child: in plain mode a backgrounded
+        # grandchild (`sleep 600 &`) outlived its timed-out task. Under bwrap
+        # --die-with-parent + --unshare-pid already tear the tree down; the
+        # group kill is the backstop there.
+        with subprocess.Popen(
             full,
             shell=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            # Task output is arbitrary bytes: strict decoding turned invalid
+            # UTF-8 into a codec error that lost the output (and, after a
+            # timeout, the "timeout" verdict too). UTF-8 on every platform,
+            # not the locale (cp1252 on Windows), matching _timeout_text.
+            encoding="utf-8",
+            errors="replace",
             env=run_env,
             cwd=cwd,
             pass_fds=pass_fds,
-            preexec_fn=preexec_fn,
-            check=False,
-        )
+            start_new_session=True,
+        ) as proc:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as e:
+                _kill_process_group(proc)
+                # Drain what the tree wrote before it died; bounded, since a
+                # descendant that escaped the group could hold the pipes open.
+                # On a second timeout, keep that exception's output: it holds
+                # everything read so far.
+                try:
+                    e.stdout, e.stderr = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired as drain:
+                    e.stdout, e.stderr = drain.stdout, drain.stderr
+                raise
+            except BaseException:
+                _kill_process_group(proc)
+                raise
         elapsed = round(time.time() - started, 2)
         setup = _setup_state()
         out = {
             "returncode": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
+            "stdout": stdout,
+            "stderr": stderr,
             "elapsed_s": elapsed,
             "sandbox": sandbox,
         }
@@ -1453,8 +1528,8 @@ def run_shell(
     except subprocess.TimeoutExpired as e:
         return {
             "returncode": -1,
-            "stdout": (e.stdout or "") if isinstance(e.stdout, str) else "",
-            "stderr": (e.stderr or "") if isinstance(e.stderr, str) else "",
+            "stdout": _timeout_text(e.stdout),
+            "stderr": _timeout_text(e.stderr),
             "elapsed_s": round(time.time() - started, 2),
             "error": "timeout",
             "sandbox": sandbox,
