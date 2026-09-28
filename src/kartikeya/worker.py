@@ -26,6 +26,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import sandbox
 from .cgroup_setup import cgroup_status, setup_cgroup
 from .execute import (
     NetworkAuthorizer,
@@ -178,6 +179,16 @@ def run_worker(
     # idle lane. Initialised True so a worker that has not yet tried to claim
     # does not accuse itself.
     last_claim_ok = True
+    # A worker killed mid-task leaves its tasks' cgroup leaves behind (and
+    # anything still running in them). Sweep them once at start; leaves of
+    # live sibling workers are left alone.
+    try:
+        swept = sandbox.sweep_stale_cgroup_leaves()
+    except Exception as e:  # noqa: BLE001 — housekeeping is best-effort and logged
+        logger.warning("cgroup leaf sweep failed: %s", e)
+    else:
+        if swept:
+            logger.warning("kart swept %d stale cgroup leaf(s): %s", len(swept), swept)
     try:
         while True:
             on_heartbeat(lane=lane, tick_ok=last_claim_ok)

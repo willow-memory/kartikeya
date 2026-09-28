@@ -1199,11 +1199,15 @@ def _rtk_rewrite(cmd: str, config: dict) -> str:
             [binary, "rewrite", cmd],
             capture_output=True,
             text=True,
+            # Strict UTF-8, not the locale and not errors="replace": this is a
+            # command about to run, and a replacement character would change
+            # it. Undecodable output means no rewrite (gap 89db5297e0c2).
+            encoding="utf-8",
             timeout=2,
             env={"PATH": os.environ.get("PATH", ""), "RTK_TELEMETRY_DISABLED": "1"},
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return cmd
     if result.returncode != 0:
         return cmd
@@ -1313,20 +1317,27 @@ class CgroupSetupError(RuntimeError):
 
 
 def _try_make_cgroup(limits: dict) -> str | None:
-    """Create a limited cgroup v2 leaf for one task, or None if no delegated
+    """Create a limited cgroup v2 leaf for one task, or None if no cgroup
     parent is configured (then rlimit mode is the intended path).
 
-    Once a parent resolves, cgroup mode is what the operator asked for, so a
-    failure to create or configure the leaf raises CgroupSetupError and the
-    task is refused rather than run without a memory cap. The leaf is named
-    with a uuid, not pid+millisecond: concurrent slots in one worker process
-    that started in the same millisecond collided on the old name, and the
-    loser silently ran uncapped (gap 879c09c6e723).
+    Once a parent is configured, cgroup mode is what the operator asked for,
+    so an unusable parent, or a failure to create or configure the leaf,
+    raises CgroupSetupError and the task is refused rather than run without
+    a memory cap. The leaf is named ``kart-<owner pid>-<uuid>``: the uuid
+    keeps concurrent slots from colliding (gap 879c09c6e723), and the owner
+    pid lets ``sweep_stale_cgroup_leaves`` tell a dead worker's leftovers
+    from a live sibling's.
     """
-    parent = cgroup_setup.resolve_cgroup_parent()
+    parent, unusable = cgroup_setup.cgroup_parent_state()
     if not parent:
+        if unusable:
+            raise CgroupSetupError(
+                f"cgroup parent {unusable} is configured but is not a usable "
+                "delegated parent (memory+pids delegated, no processes); run "
+                "`kartikeya cgroup-status`"
+            )
         return None
-    leaf = os.path.join(parent, f"kart-{uuid.uuid4().hex}")
+    leaf = os.path.join(parent, f"kart-{os.getpid()}-{uuid.uuid4().hex}")
     try:
         os.mkdir(leaf)
     except OSError as e:
@@ -1343,6 +1354,87 @@ def _try_make_cgroup(limits: dict) -> str | None:
             os.rmdir(leaf)
         raise CgroupSetupError(f"cannot set limits on cgroup leaf {leaf}: {e}") from e
     return leaf
+
+
+def _write_cgroup_kill(leaf: str) -> None:
+    """SIGKILL every process left in ``leaf`` (cgroup v2 ``cgroup.kill``,
+    Linux 5.14+). Best-effort, and never creates the file: on a kernel
+    without it, or a path that is not a cgroup, this does nothing."""
+    with contextlib.suppress(OSError):
+        fd = os.open(os.path.join(leaf, "cgroup.kill"), os.O_WRONLY)
+        try:
+            os.write(fd, b"1")
+        finally:
+            os.close(fd)
+
+
+def _kill_and_remove_leaf(leaf: str, *, attempts: int = 40) -> bool:
+    """Kill whatever is still in ``leaf``, then remove it. Anything left in a
+    task's leaf once the task is over (a setsid'd escapee, a slow pid-namespace
+    teardown) is killed, not orphaned. rmdir is retried briefly because killed
+    processes take a moment to leave the cgroup. Returns whether it is gone."""
+    _write_cgroup_kill(leaf)
+    for _ in range(attempts):
+        try:
+            os.rmdir(leaf)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            time.sleep(0.025)
+    _log.warning("kart cgroup leaf not removed (still busy): %s", leaf)
+    return False
+
+
+_LEAF_OWNER_RE = re.compile(r"^kart-(\d+)-[0-9a-f]+$")
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError):
+        return True
+    return True
+
+
+def sweep_stale_cgroup_leaves() -> list[str]:
+    """Remove task leaves left under the cgroup parent by a worker that died.
+
+    A leaf whose owner pid (``kart-<pid>-...``) is no longer running is killed
+    and removed. A live owner's leaves are left alone: several worker
+    processes share one parent. A ``kart-*`` leaf with no recoverable owner is
+    only removed if it is already empty (rmdir refuses a populated cgroup).
+    Returns the leaves removed. Called once at worker start.
+    """
+    parent = cgroup_setup.resolve_cgroup_parent()
+    if not parent:
+        return []
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        return []
+    removed: list[str] = []
+    for name in names:
+        if not name.startswith("kart-"):
+            continue
+        leaf = os.path.join(parent, name)
+        if not os.path.isdir(leaf):
+            continue
+        m = _LEAF_OWNER_RE.match(name)
+        if m and _pid_alive(int(m.group(1))):
+            continue
+        if m:
+            if _kill_and_remove_leaf(leaf, attempts=8):
+                removed.append(leaf)
+        else:
+            try:
+                os.rmdir(leaf)
+                removed.append(leaf)
+            except OSError:
+                pass
+    return removed
 
 
 # Joins the cgroup from inside the child, then execs the real argv in the same
@@ -1376,10 +1468,7 @@ def _limits_context(limits: dict):
         prefix = ["/bin/sh", "-c", _CGROUP_JOIN_SH, os.path.join(leaf, "cgroup.procs")]
 
         def _cleanup_cgroup() -> None:
-            try:
-                os.rmdir(leaf)
-            except OSError:
-                pass
+            _kill_and_remove_leaf(leaf)
 
         return prefix, _cleanup_cgroup, "cgroup"
 
@@ -1474,8 +1563,9 @@ def run_shell(
         try:
             limits_prefix, cleanup, resource_mode = _limits_context(limits)
         except CgroupSetupError as e:
+            # No returncode: nothing ran. Hosts read "no returncode" as
+            # "refused before running".
             return {
-                "returncode": -1,
                 "stdout": "",
                 "stderr": str(e),
                 "elapsed_s": round(time.time() - started, 2),
@@ -1652,12 +1742,15 @@ def run_shell_result_for_task(
         else "failed"
     )
     result = {
-        "returncode": raw.get("returncode"),
         "stdout": clip_output((raw.get("stdout") or "").strip(), 8000),
         "stderr": clip_output((raw.get("stderr") or "").strip(), 1500),
         "elapsed_s": raw.get("elapsed_s"),
         "sandbox": raw.get("sandbox"),
     }
+    # Absent, not None, when nothing ran: hosts read a missing returncode as
+    # "refused before running" (e.g. cgroup_setup_failed).
+    if "returncode" in raw:
+        result = {"returncode": raw["returncode"], **result}
     if raw.get("sandbox_setup"):
         result["sandbox_setup"] = raw["sandbox_setup"]
     if raw.get("error"):
@@ -1667,7 +1760,7 @@ def run_shell_result_for_task(
     # no-match, a silent non-zero step in an `&&` chain) would otherwise leave the
     # failure causeless and untriageable. Full stdout/stderr stay in their fields.
     if status == "failed" and not result.get("error"):
-        rc = result["returncode"]
+        rc = result.get("returncode")
         last_err = result["stderr"].splitlines()[-1].strip() if result["stderr"] else ""
         last_out = result["stdout"].splitlines()[-1].strip() if result["stdout"] else ""
         if last_err:

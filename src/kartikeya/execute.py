@@ -103,13 +103,16 @@ def _normalize_shell_result(raw: dict) -> dict:
     stdout = (raw.get("stdout") or "").strip()
     stderr = (raw.get("stderr") or "").strip()
     out: dict[str, Any] = {
-        "returncode": raw.get("returncode"),
         "stdout": stdout,
         "stderr": stderr,
         "elapsed_s": raw.get("elapsed_s"),
         "sandbox": raw.get("sandbox"),
         "provider": "shell",
     }
+    # Absent, not None, when nothing ran: hosts read a missing returncode as
+    # "refused before running" (e.g. cgroup_setup_failed).
+    if "returncode" in raw:
+        out = {"returncode": raw["returncode"], **out}
     if raw.get("error"):
         out["error"] = raw["error"]
     for _k in ("sandbox_manifest", "sandbox_setup"):
