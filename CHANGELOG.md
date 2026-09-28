@@ -36,7 +36,6 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Added
 
-* **worker:** configurable batch-lane concurrency (KART_BATCH_WORKERS) ([413e018](https://github.com/willow-memory/kartikeya/commit/413e0185a38e393c1581707e4d5e89d0322eabdf))
 * **worker:** configurable batch-lane concurrency (KART_BATCH_WORKERS) ([af55b05](https://github.com/willow-memory/kartikeya/commit/af55b05ea035e0cd6276b14dcc8daedc9fb49727))
 
 ## [0.3.4](https://github.com/willow-memory/kartikeya/compare/v0.3.3...v0.3.4) (2026-09-28)
