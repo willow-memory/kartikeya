@@ -36,7 +36,7 @@ rather than cutting one of their own — see `release-please-config.json`.
 
 ### Fixed
 
-* **sandbox:** remove the cgroup leaf when setup fails before launch ([09c72e4](https://github.com/willow-memory/kartikeya/commit/09c72e477ee86cc229a700381bcc9e2337921052))
+* **sandbox:** remove the cgroup leaf when setup fails before launch ([3c547fb](https://github.com/willow-memory/kartikeya/commit/3c547fb1424e29dd75192c5a645f94bd38feca89))
 
 ## [0.4.4](https://github.com/willow-memory/kartikeya/compare/v0.4.3...v0.4.4) (2026-09-28)
 
