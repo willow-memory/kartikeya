@@ -1344,9 +1344,11 @@ def _limits_context(limits: dict):
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """SIGKILL the process group led by ``proc`` (see start_new_session in
-    run_shell), then reap ``proc``. The group may already be gone."""
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, signal.SIGKILL)
+    run_shell), then reap ``proc``. The group may already be gone. Windows
+    has no process groups here, so it falls back to killing ``proc`` alone."""
+    if hasattr(os, "killpg"):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
     with contextlib.suppress(OSError):
         proc.kill()
     proc.wait()
@@ -1446,7 +1448,7 @@ def run_shell(
             env=run_env,
             cwd=cwd,
             pass_fds=pass_fds,
-            preexec_fn=preexec_fn,
+            preexec_fn=preexec_fn,  # noqa: PLW1509 — same cgroup-join hook subprocess.run already passed; it only writes cgroup.procs
             start_new_session=True,
         ) as proc:
             try:

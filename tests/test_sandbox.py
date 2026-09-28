@@ -647,6 +647,7 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
 @pytest.mark.parametrize("stdout_open", [False, True])
 def test_timeout_kills_backgrounded_grandchild(tmp_path, monkeypatch, stdout_open):
     # A timed-out task must take its whole process tree with it. Before the
