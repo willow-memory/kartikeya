@@ -529,13 +529,56 @@ def _blocking_issues(issues: list[ScanIssue], *, fleet: bool) -> list[ScanIssue]
     return out
 
 
+# Quote removal, for a second pass of the text rules (bite B0 of
+# docs/design/parser-scanner.md). bash drops quotes, escaping backslashes and
+# backslash-newlines before running a word, so `c'u'rl`, `c\url`, `$'cu'rl`,
+# `cu\<newline>rl` and `~/.s''sh` run as `curl` and `~/.ssh` while the rules,
+# which read the text as written, never see those words.
+#
+# Operator ruling on #92 (union approach): every check reads the text as
+# written AND its quote-stripped copies (whole, and line by line), heredoc
+# bodies included, and a hit in any refuses. Nothing here models bash to decide that some text is
+# data or a mere mention: that precision (quote pairing, command position,
+# heredoc parsing) belongs to the parser bites. The cost is that a quoted
+# mention (`grep -rn 'systemctl' src/`) is refused like the command it names.
+# What quote removal cannot model (variables, substitutions, globs, `$'\x..'`
+# escapes) also waits for the parser.
+_LINE_CONTINUATION = "\\\n"
+_ANSI_C_QUOTE_RE = re.compile(r"\$(?=['\"])")
+_BACKSLASH_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
+
+
+def _quote_normalised(text: str) -> str:
+    """Every backslash-newline, quote and escaping backslash removed. Errs
+    towards removing too much (a backslash inside single quotes is literal
+    to bash, and is dropped here anyway): it only ever adds a refusal."""
+    out = text.replace(_LINE_CONTINUATION, "")
+    out = _ANSI_C_QUOTE_RE.sub("", out)
+    out = _BACKSLASH_ESCAPE_RE.sub(r"\1", out)
+    return out.replace("'", "").replace('"', "")
+
+
+def _scan_texts(text: str) -> tuple[str, ...]:
+    """The text as written, its quote-stripped copy, and the same strip
+    applied line by line. Every check reads all of them, and a hit in any
+    refuses. The per-line copy matters where the whole-text strip joins two
+    lines: an escaped backslash ending one line (`x\\\\`) reads as a
+    backslash-newline to the whole-text strip, so the next line's command
+    word would lose its place at the start of a command."""
+    whole = _quote_normalised(text)
+    per_line = "\n".join(_quote_normalised(line) for line in text.split("\n"))
+    return tuple(dict.fromkeys((text, whole, per_line)))
+
+
 def _scan_shell_fragment(fragment: str) -> ScanIssue | None:
     text = fragment.strip()
     if not text:
         return None
+    # The allowance is decided on the text as written: the shlex split behind
+    # it already applies bash's quoting rules.
     fleet = _fleet_allowed(text)
-    issues = _blocking_issues(scan_bash(text), fleet=fleet)
-    return worst(issues)
+    issues = [i for t in _scan_texts(text) for i in scan_bash(t)]
+    return worst(_blocking_issues(issues, fleet=fleet))
 
 
 def _shell_fragments_from_task(task_text: str) -> list[str]:
@@ -757,7 +800,14 @@ def check_heredoc_wrapper_collision(
 def _hook_tamper_fragment(text: str) -> str | None:
     if not text:
         return None
-    return next((frag for frag in _hook_guard_fragments() if frag in text), None)
+    return next(
+        (
+            frag
+            for frag in _hook_guard_fragments()
+            if any(frag in t for t in _scan_texts(text))
+        ),
+        None,
+    )
 
 
 def check_hook_tamper(task_text: str = "", *, script_body: str = "") -> dict | None:
@@ -789,7 +839,7 @@ def check_hook_tamper(task_text: str = "", *, script_body: str = "") -> dict | N
 def check_systemd_manager(task_text: str = "", *, script_body: str = "") -> dict | None:
     """Refuse systemctl/busctl in task or script_body — broker verbs only."""
     for where, text in (("task", task_text or ""), ("script_body", script_body or "")):
-        if text and _SYSTEMD_MANAGER_RE.search(text):
+        if text and any(_SYSTEMD_MANAGER_RE.search(t) for t in _scan_texts(text)):
             return {
                 "error": _SYSTEMD_MANAGER_REFUSAL,
                 "kart_scan": {
