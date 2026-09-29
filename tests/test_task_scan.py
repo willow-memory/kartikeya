@@ -1292,3 +1292,25 @@ def test_a_quoted_mention_is_refused_like_the_command(task):
     refusal = task_scan.check_kart_task(task)
     assert refusal is not None, task
     assert refusal["kart_scan"]["category"] == "systemd_manager"
+
+
+# Loki 2F3B108A: witnesses from rc4.bypass.txt and witness3.py, verbatim.
+@pytest.mark.parametrize(
+    ("task", "category"),
+    [
+        # P4: a multi-line single-quoted string, then a quoted command
+        ("echo 'a\nb'; 'systemctl' --user restart x", "systemd_manager"),
+        # P8: a `<<'Q'` heredoc with a backslash line, then a quoted command
+        ("cat <<'Q'\nx\\\nQ\n'systemctl' --user restart x\nQ", "systemd_manager"),
+        # P15: a heredoc piped to bash, with the protected path split
+        ("cat <<EOF | bash\ncat host/hooks/run''ner.py\nEOF", "hook_tamper"),
+        # N16: a leading backslash escape, and an escaped path character
+        ("\\" + "sys" + "temctl --user restart x", "systemd_manager"),
+        ("cat host/hooks/run\\ner.py", "hook_tamper"),
+    ],
+)
+def test_loki_witnesses_are_refused(task, category, monkeypatch):
+    monkeypatch.setattr(task_scan, "HOOK_GUARD_FRAGMENTS", ("host/hooks/runner.py",))
+    refusal = task_scan.check_kart_task(task)
+    assert refusal is not None, task
+    assert refusal["kart_scan"]["category"] == category, (task, refusal)
