@@ -31,6 +31,19 @@ Note what release-please will not list once it takes over: `docs:`, `test:`,
 `ci:` and `chore:` are hidden. Those commits ship inside the next real release
 rather than cutting one of their own — see `release-please-config.json`.
 
+## [0.5.2](https://github.com/willow-memory/kartikeya/compare/v0.5.1...v0.5.2) (2026-09-29)
+
+
+### Fixed
+
+* **scan:** add the per-line stripped copy; pin the as-written floor ([f450ffb](https://github.com/willow-memory/kartikeya/commit/f450ffb056cfe36f9442dbb05040c52d01b663a3))
+* **scan:** every check reads the as-written and quote-stripped text (union) ([98f2bc7](https://github.com/willow-memory/kartikeya/commit/98f2bc776e81f24248b58573bbf2097077b6cc47))
+* **scan:** per-line, bash-paired unquoting for the mention checks ([7086fe8](https://github.com/willow-memory/kartikeya/commit/7086fe832e4f4687ed88926c7eee34ce0821a05e))
+* **scan:** read the mention checks through a union of quote-removed views ([6fab4f4](https://github.com/willow-memory/kartikeya/commit/6fab4f4a9017d099433df510c76123891f945178))
+* **scan:** second pass over quote-normalised text (scanner bite B0) ([4e9d2c6](https://github.com/willow-memory/kartikeya/commit/4e9d2c610cc4e260a2b1fd9358670f3c9a22d6ae))
+* **scan:** second pass over quote-normalised text (scanner bite B0) ([7049c42](https://github.com/willow-memory/kartikeya/commit/7049c42424c733878b35e1c544b87501b6a298ca))
+* **scan:** unquote only inside words for mention checks; drop line continuations ([5341696](https://github.com/willow-memory/kartikeya/commit/5341696a561370f8b4caa4a95ac3152b6ad04dd3))
+
 ## [0.5.1](https://github.com/willow-memory/kartikeya/compare/v0.5.0...v0.5.1) (2026-09-28)
 
 
